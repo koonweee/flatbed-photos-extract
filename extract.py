@@ -673,6 +673,7 @@ def run_one(
     review_min_score: float,
     review_min_margin: float,
     debug_panel_width: int | None,
+    write_debug: bool,
 ) -> dict:
     started = time.perf_counter()
     source_stem = input_path.stem
@@ -683,7 +684,7 @@ def run_one(
 
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    original_debug = Image.fromarray(image_rgb)
+    original_debug = Image.fromarray(image_rgb) if write_debug else None
     candidates = rough_candidates(image_bgr, threshold, min_area)
 
     detections = []
@@ -715,7 +716,8 @@ def run_one(
         )
 
         filename = f"{source_stem}_{index:02d}.png"
-        before_orientation_images.append(trimmed)
+        if write_debug:
+            before_orientation_images.append(trimmed)
 
         orientation_started = time.perf_counter()
         orientation = classify_orientation_hybrid(trimmed, detector, gyroscope, max_side)
@@ -770,20 +772,21 @@ def run_one(
             }
         )
 
-    _ret, debug_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-    mask_debug = Image.fromarray(debug_mask)
-    outline_debug = make_debug_overlay(image_rgb, detections)
-    before_orientation_debug = make_contact_sheet_from_arrays(before_orientation_images)
-    final_debug = make_contact_sheet_image(oriented_paths)
-    make_pipeline_debug_image(
-        original_debug,
-        mask_debug,
-        outline_debug,
-        before_orientation_debug,
-        final_debug,
-        debug_dir / f"{source_stem}_debug.png",
-        debug_panel_width,
-    )
+    if write_debug and original_debug is not None:
+        _ret, debug_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+        mask_debug = Image.fromarray(debug_mask)
+        outline_debug = make_debug_overlay(image_rgb, detections)
+        before_orientation_debug = make_contact_sheet_from_arrays(before_orientation_images)
+        final_debug = make_contact_sheet_image(oriented_paths)
+        make_pipeline_debug_image(
+            original_debug,
+            mask_debug,
+            outline_debug,
+            before_orientation_debug,
+            final_debug,
+            debug_dir / f"{source_stem}_debug.png",
+            debug_panel_width,
+        )
 
     elapsed_ms = (time.perf_counter() - started) * 1000
     review_count = sum(1 for detection in detections if detection["needs_review"])
@@ -840,6 +843,7 @@ def run(
     review_min_score: float,
     review_min_margin: float,
     debug_panel_width: int | None,
+    write_debug: bool,
 ) -> None:
     if not model_path.exists():
         raise FileNotFoundError(f"Could not find YuNet model: {model_path}")
@@ -853,12 +857,19 @@ def run(
     metadata_path = batch_dir / "metadata.csv"
 
     photos_dir.mkdir(parents=True, exist_ok=True)
-    debug_dir.mkdir(parents=True, exist_ok=True)
 
     for path in photos_dir.glob("*.png"):
         path.unlink()
-    for path in debug_dir.glob("*.png"):
-        path.unlink()
+    if debug_dir.exists():
+        for path in debug_dir.glob("*.png"):
+            path.unlink()
+        if not write_debug:
+            try:
+                debug_dir.rmdir()
+            except OSError:
+                pass
+    if write_debug:
+        debug_dir.mkdir(parents=True, exist_ok=True)
     if metadata_path.exists():
         metadata_path.unlink()
 
@@ -883,6 +894,7 @@ def run(
                 review_min_score,
                 review_min_margin,
                 debug_panel_width,
+                write_debug,
             )
         )
 
@@ -940,6 +952,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Resize each debug panel to this width. By default, debug panels are not scaled down.",
     )
+    parser.add_argument(
+        "--no-debug",
+        action="store_true",
+        help="Do not write per-scan debug PNGs.",
+    )
     return parser.parse_args()
 
 
@@ -965,6 +982,7 @@ def main() -> None:
         args.review_min_score,
         args.review_min_margin,
         args.debug_panel_width,
+        not args.no_debug,
     )
 
 

@@ -26,6 +26,12 @@ Each command creates one batch folder under `output/`. By default the batch name
 python extract.py /path/to/scan-1.png /path/to/scan-2.png --output-dir output --batch-name family-box-b
 ```
 
+Skip debug PNGs when you only want final photos and metadata:
+
+```bash
+python extract.py /path/to/scan-1.png --no-debug
+```
+
 All photos from all input scans are written into the same batch:
 
 ```text
@@ -60,3 +66,5 @@ The final pipeline intentionally does not dewarp curled or non-flat photos. It o
 `metadata.csv` records source file names, per-scan photo indexes, source bounding boxes, fitted corners, output sizes, trim amounts, estimated scan rotation, orientation decisions, and classifier scores. `source_rotation_deg_clockwise_estimate` is the rotation of the photo on the scanner bed before rectification. `orientation_deg` is the rotation applied after extraction.
 
 Each input scan gets one debug image at `debug/<scan>_debug.png`. It is arranged left to right in pipeline order: original scan, threshold mask, detected outlines, extracted contact sheet before orientation, and final contact sheet after orientation. Debug panels are not scaled down by default; use `--debug-panel-width 800` or another width if you want smaller review images.
+
+The extracted photos in `photos/` are not intentionally scaled down. Each photo is warped at the detected source-pixel border size, then trimmed and rotated.
