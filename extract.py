@@ -7,6 +7,7 @@ import argparse
 import csv
 import math
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -20,6 +21,61 @@ from transformers import AutoModelForImageClassification
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROTATIONS = (0, 90, 180, 270)
 ANGLE_BY_CLASS = {0: 0, 1: 90, 2: 180, 3: 270}
+METADATA_COLUMNS = [
+    "source_file",
+    "source_stem",
+    "source_photo_index",
+    "filename",
+    "source_x",
+    "source_y",
+    "source_width",
+    "source_height",
+    "corner_tl_x",
+    "corner_tl_y",
+    "corner_tr_x",
+    "corner_tr_y",
+    "corner_br_x",
+    "corner_br_y",
+    "corner_bl_x",
+    "corner_bl_y",
+    "output_width",
+    "output_height",
+    "trimmed_output_width",
+    "trimmed_output_height",
+    "trim_left_px",
+    "trim_top_px",
+    "trim_right_px",
+    "trim_bottom_px",
+    "trim_total_px",
+    "trim_width_pct",
+    "trim_height_pct",
+    "dark_edge_ratio_before",
+    "dark_edge_ratio_after",
+    "source_rotation_deg_clockwise_estimate",
+    "orientation_deg",
+    "orientation_score",
+    "orientation_margin",
+    "face_count",
+    "orientation_method",
+    "needs_review",
+    "orientation_scores",
+    "yunet_orientation_deg",
+    "yunet_orientation_score",
+    "yunet_orientation_margin",
+    "yunet_face_count",
+    "yunet_orientation_scores",
+    "gyroscope_orientation_deg",
+    "gyroscope_orientation_score",
+    "gyroscope_orientation_margin",
+    "gyroscope_orientation_scores",
+    "refined",
+    "refine_reason",
+    "contour_area",
+]
+
+
+def default_batch_name() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
 def order_points(points: np.ndarray) -> np.ndarray:
@@ -283,6 +339,77 @@ def make_debug_summary(
     summary.save(output_path)
 
 
+def write_metadata(metadata_path: Path, detections: list[dict]) -> None:
+    with metadata_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(METADATA_COLUMNS)
+        for detection in detections:
+            x, y, w, h = detection["bbox"]
+            tl, tr, br, bl = detection["quad"]
+            writer.writerow(
+                [
+                    detection["source_file"],
+                    detection["source_stem"],
+                    detection["source_photo_index"],
+                    detection["filename"],
+                    x,
+                    y,
+                    w,
+                    h,
+                    round(float(tl[0]), 3),
+                    round(float(tl[1]), 3),
+                    round(float(tr[0]), 3),
+                    round(float(tr[1]), 3),
+                    round(float(br[0]), 3),
+                    round(float(br[1]), 3),
+                    round(float(bl[0]), 3),
+                    round(float(bl[1]), 3),
+                    detection["width"],
+                    detection["height"],
+                    detection["trimmed_width"],
+                    detection["trimmed_height"],
+                    detection["trim_left"],
+                    detection["trim_top"],
+                    detection["trim_right"],
+                    detection["trim_bottom"],
+                    detection["trim_left"] + detection["trim_top"] + detection["trim_right"] + detection["trim_bottom"],
+                    round((detection["trim_left"] + detection["trim_right"]) / detection["width"], 6),
+                    round((detection["trim_top"] + detection["trim_bottom"]) / detection["height"], 6),
+                    round(detection["dark_edge_ratio_before"], 6),
+                    round(detection["dark_edge_ratio_after"], 6),
+                    round(detection["angle"], 6),
+                    detection["orientation_deg"],
+                    round(detection["orientation_score"], 6),
+                    round(detection["orientation_margin"], 6),
+                    detection["face_count"],
+                    detection["orientation_method"],
+                    detection["needs_review"],
+                    " ".join(
+                        f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
+                        for item in detection["orientation_scores"]
+                    ),
+                    detection["yunet_orientation_deg"],
+                    round(detection["yunet_orientation_score"], 6),
+                    round(detection["yunet_orientation_margin"], 6),
+                    detection["yunet_face_count"],
+                    " ".join(
+                        f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
+                        for item in detection["yunet_orientation_scores"]
+                    ),
+                    detection["gyroscope_orientation_deg"],
+                    round(detection["gyroscope_orientation_score"], 6),
+                    round(detection["gyroscope_orientation_margin"], 6),
+                    " ".join(
+                        f"{item['rotation']}:{item['score']:.6f}"
+                        for item in detection["gyroscope_orientation_scores"]
+                    ),
+                    detection["refined"],
+                    detection["refine_reason"],
+                    round(detection["area"], 1),
+                ]
+            )
+
+
 def rotate_image(image: np.ndarray, degrees: int) -> np.ndarray:
     if degrees == 0:
         return image
@@ -504,7 +631,9 @@ def trim_dark_edges(
 
 def run_one(
     input_path: Path,
-    output_dir: Path,
+    photos_dir: Path,
+    debug_dir: Path,
+    pre_orientation_dir: Path,
     min_area: int,
     threshold: int,
     padding: int,
@@ -521,25 +650,7 @@ def run_one(
     review_min_margin: float,
 ) -> dict:
     started = time.perf_counter()
-    scan_output_dir = output_dir
-    photos_dir = scan_output_dir / "photos"
-    debug_dir = scan_output_dir / "debug"
-    pre_orientation_dir = debug_dir / "pre_orientation"
-
-    photos_dir.mkdir(parents=True, exist_ok=True)
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    pre_orientation_dir.mkdir(parents=True, exist_ok=True)
-
-    for path in photos_dir.glob("*.png"):
-        path.unlink()
-    for path in pre_orientation_dir.glob("*.png"):
-        path.unlink()
-    for path in debug_dir.glob("*.png"):
-        path.unlink()
-
-    metadata_path = scan_output_dir / "metadata.csv"
-    if metadata_path.exists():
-        metadata_path.unlink()
+    source_stem = input_path.stem
 
     image_bgr = cv2.imread(str(input_path), cv2.IMREAD_COLOR)
     if image_bgr is None:
@@ -547,7 +658,7 @@ def run_one(
 
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    Image.fromarray(image_rgb).save(debug_dir / "original.png")
+    Image.fromarray(image_rgb).save(debug_dir / f"{source_stem}_original.png")
     candidates = rough_candidates(image_bgr, threshold, min_area)
 
     detections = []
@@ -578,7 +689,7 @@ def run_one(
             edge_ratio_band,
         )
 
-        filename = f"{index:02d}.png"
+        filename = f"{source_stem}_{index:02d}.png"
         pre_orientation_path = pre_orientation_dir / filename
         cv2.imwrite(str(pre_orientation_path), trimmed)
         pre_orientation_paths.append(pre_orientation_path)
@@ -602,6 +713,9 @@ def run_one(
         detections.append(
             {
                 "filename": filename,
+                "source_file": str(input_path),
+                "source_stem": source_stem,
+                "source_photo_index": index,
                 "bbox": candidate["bbox"],
                 "area": candidate["area"],
                 "rough_quad": candidate["rough_quad"],
@@ -633,138 +747,23 @@ def run_one(
             }
         )
 
-    with metadata_path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "filename",
-                "source_x",
-                "source_y",
-                "source_width",
-                "source_height",
-                "corner_tl_x",
-                "corner_tl_y",
-                "corner_tr_x",
-                "corner_tr_y",
-                "corner_br_x",
-                "corner_br_y",
-                "corner_bl_x",
-                "corner_bl_y",
-                "output_width",
-                "output_height",
-                "trimmed_output_width",
-                "trimmed_output_height",
-                "trim_left_px",
-                "trim_top_px",
-                "trim_right_px",
-                "trim_bottom_px",
-                "trim_total_px",
-                "trim_width_pct",
-                "trim_height_pct",
-                "dark_edge_ratio_before",
-                "dark_edge_ratio_after",
-                "source_rotation_deg_clockwise_estimate",
-                "orientation_deg",
-                "orientation_score",
-                "orientation_margin",
-                "face_count",
-                "orientation_method",
-                "needs_review",
-                "orientation_scores",
-                "yunet_orientation_deg",
-                "yunet_orientation_score",
-                "yunet_orientation_margin",
-                "yunet_face_count",
-                "yunet_orientation_scores",
-                "gyroscope_orientation_deg",
-                "gyroscope_orientation_score",
-                "gyroscope_orientation_margin",
-                "gyroscope_orientation_scores",
-                "refined",
-                "refine_reason",
-                "contour_area",
-            ]
-        )
-        for detection in detections:
-            x, y, w, h = detection["bbox"]
-            tl, tr, br, bl = detection["quad"]
-            writer.writerow(
-                [
-                    detection["filename"],
-                    x,
-                    y,
-                    w,
-                    h,
-                    round(float(tl[0]), 3),
-                    round(float(tl[1]), 3),
-                    round(float(tr[0]), 3),
-                    round(float(tr[1]), 3),
-                    round(float(br[0]), 3),
-                    round(float(br[1]), 3),
-                    round(float(bl[0]), 3),
-                    round(float(bl[1]), 3),
-                    detection["width"],
-                    detection["height"],
-                    detection["trimmed_width"],
-                    detection["trimmed_height"],
-                    detection["trim_left"],
-                    detection["trim_top"],
-                    detection["trim_right"],
-                    detection["trim_bottom"],
-                    detection["trim_left"] + detection["trim_top"] + detection["trim_right"] + detection["trim_bottom"],
-                    round((detection["trim_left"] + detection["trim_right"]) / detection["width"], 6),
-                    round((detection["trim_top"] + detection["trim_bottom"]) / detection["height"], 6),
-                    round(detection["dark_edge_ratio_before"], 6),
-                    round(detection["dark_edge_ratio_after"], 6),
-                    round(detection["angle"], 6),
-                    detection["orientation_deg"],
-                    round(detection["orientation_score"], 6),
-                    round(detection["orientation_margin"], 6),
-                    detection["face_count"],
-                    detection["orientation_method"],
-                    detection["needs_review"],
-                    " ".join(
-                        f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
-                        for item in detection["orientation_scores"]
-                    ),
-                    detection["yunet_orientation_deg"],
-                    round(detection["yunet_orientation_score"], 6),
-                    round(detection["yunet_orientation_margin"], 6),
-                    detection["yunet_face_count"],
-                    " ".join(
-                        f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
-                        for item in detection["yunet_orientation_scores"]
-                    ),
-                    detection["gyroscope_orientation_deg"],
-                    round(detection["gyroscope_orientation_score"], 6),
-                    round(detection["gyroscope_orientation_margin"], 6),
-                    " ".join(
-                        f"{item['rotation']}:{item['score']:.6f}"
-                        for item in detection["gyroscope_orientation_scores"]
-                    ),
-                    detection["refined"],
-                    detection["refine_reason"],
-                    round(detection["area"], 1),
-                ]
-            )
-
     _ret, debug_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-    Image.fromarray(debug_mask).save(debug_dir / "mask.png")
-    make_debug_overlay(image_rgb, detections).save(debug_dir / "overlay.png")
-    make_contact_sheet(pre_orientation_paths, debug_dir / "contact-sheet-before-orientation.png")
-    make_contact_sheet(oriented_paths, debug_dir / "contact-sheet-after-orientation.png")
-    make_contact_sheet(oriented_paths, debug_dir / "contact-sheet.png")
+    Image.fromarray(debug_mask).save(debug_dir / f"{source_stem}_mask.png")
+    make_debug_overlay(image_rgb, detections).save(debug_dir / f"{source_stem}_overlay.png")
+    make_contact_sheet(pre_orientation_paths, debug_dir / f"{source_stem}_contact-sheet-before-orientation.png")
+    make_contact_sheet(oriented_paths, debug_dir / f"{source_stem}_contact-sheet-after-orientation.png")
+    make_contact_sheet(oriented_paths, debug_dir / f"{source_stem}_contact-sheet.png")
     make_debug_summary(
-        debug_dir / "original.png",
-        debug_dir / "mask.png",
-        debug_dir / "contact-sheet.png",
-        debug_dir / "original-mask-contact.png",
+        debug_dir / f"{source_stem}_original.png",
+        debug_dir / f"{source_stem}_mask.png",
+        debug_dir / f"{source_stem}_contact-sheet.png",
+        debug_dir / f"{source_stem}_original-mask-contact.png",
     )
 
     elapsed_ms = (time.perf_counter() - started) * 1000
     review_count = sum(1 for detection in detections if detection["needs_review"])
     print(
-        f"{input_path}: detected {len(detections)} photos -> {output_dir} "
+        f"{input_path}: detected {len(detections)} photos -> {photos_dir} "
         f"({elapsed_ms:.1f} ms total, {orientation_elapsed_ms:.1f} ms orientation)"
     )
     for detection in detections:
@@ -785,7 +784,11 @@ def run_one(
         )
     return {
         "input": input_path,
-        "output_dir": scan_output_dir,
+        "photos_dir": photos_dir,
+        "debug_dir": debug_dir,
+        "detections": detections,
+        "oriented_paths": oriented_paths,
+        "pre_orientation_paths": pre_orientation_paths,
         "photos": len(detections),
         "needs_review": review_count,
         "elapsed_ms": elapsed_ms,
@@ -796,6 +799,7 @@ def run_one(
 def run(
     input_paths: list[Path],
     output_dir: Path,
+    batch_name: str | None,
     min_area: int,
     threshold: int,
     padding: int,
@@ -818,12 +822,32 @@ def run(
     detector = make_detector(model_path, 320, 320, score_threshold)
     gyroscope = GyroScopeClassifier(gyroscope_model)
     summaries = []
-    output_dir.mkdir(parents=True, exist_ok=True)
+    batch_dir = output_dir / (batch_name or default_batch_name())
+    photos_dir = batch_dir / "photos"
+    debug_dir = batch_dir / "debug"
+    pre_orientation_dir = debug_dir / "pre_orientation"
+    metadata_path = batch_dir / "metadata.csv"
+
+    photos_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    pre_orientation_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in photos_dir.glob("*.png"):
+        path.unlink()
+    for path in debug_dir.glob("*.png"):
+        path.unlink()
+    for path in pre_orientation_dir.glob("*.png"):
+        path.unlink()
+    if metadata_path.exists():
+        metadata_path.unlink()
+
     for input_path in input_paths:
         summaries.append(
             run_one(
                 input_path,
-                output_dir / input_path.stem,
+                photos_dir,
+                debug_dir,
+                pre_orientation_dir,
                 min_area,
                 threshold,
                 padding,
@@ -841,13 +865,20 @@ def run(
             )
         )
 
+    all_detections = [detection for summary in summaries for detection in summary["detections"]]
+    all_oriented_paths = [path for summary in summaries for path in summary["oriented_paths"]]
+    all_pre_orientation_paths = [path for summary in summaries for path in summary["pre_orientation_paths"]]
+    write_metadata(metadata_path, all_detections)
+    make_contact_sheet(all_oriented_paths, debug_dir / "batch-contact-sheet.png")
+    make_contact_sheet(all_pre_orientation_paths, debug_dir / "batch-contact-sheet-before-orientation.png")
+
     total_elapsed_ms = sum(item["elapsed_ms"] for item in summaries)
     total_orientation_ms = sum(item["orientation_elapsed_ms"] for item in summaries)
     total_photos = sum(item["photos"] for item in summaries)
     total_review = sum(item["needs_review"] for item in summaries)
     print(
         "summary: "
-        f"inputs={len(summaries)} photos={total_photos} needs_review={total_review} "
+        f"batch={batch_dir} inputs={len(summaries)} photos={total_photos} needs_review={total_review} "
         f"total_ms={total_elapsed_ms:.1f} orientation_ms={total_orientation_ms:.1f} "
         f"avg_orientation_ms_per_photo={(total_orientation_ms / total_photos if total_photos else 0):.1f}"
     )
@@ -859,6 +890,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("inputs", type=Path, nargs="+", help="Flatbed scan image(s) to process.")
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    parser.add_argument(
+        "--batch-name",
+        help="Name for this extraction batch. Defaults to the current datetime, e.g. 20260521-231500.",
+    )
     parser.add_argument("--min-area", type=int, default=45_000)
     parser.add_argument("--threshold", type=int, default=90)
     parser.add_argument("--padding", type=int, default=45)
@@ -891,6 +926,7 @@ def main() -> None:
     run(
         args.inputs,
         args.output_dir,
+        args.batch_name,
         args.min_area,
         args.threshold,
         args.padding,
