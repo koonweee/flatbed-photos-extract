@@ -341,23 +341,26 @@ def make_pipeline_debug_image(
     before_orientation: Image.Image | None,
     final: Image.Image | None,
     output_path: Path,
-    panel_width: int = 520,
+    panel_width: int | None = None,
 ) -> None:
     panels = []
-    fallback = Image.new("RGB", (panel_width, panel_width), (24, 24, 24))
+    fallback_width = panel_width or original.width
+    fallback = Image.new("RGB", (fallback_width, fallback_width), (24, 24, 24))
     for image in (original, mask, outline, before_orientation or fallback, final or fallback):
         image = image.convert("RGB")
-        height = max(1, round(image.height * (panel_width / image.width)))
-        image = image.resize((panel_width, height), Image.Resampling.LANCZOS)
+        if panel_width is not None:
+            height = max(1, round(image.height * (panel_width / image.width)))
+            image = image.resize((panel_width, height), Image.Resampling.LANCZOS)
         panels.append(image)
 
     max_height = max(panel.height for panel in panels)
     gap = 18
-    summary = Image.new("RGB", (panel_width * 5 + gap * 6, max_height + gap * 2), (24, 24, 24))
+    total_width = sum(panel.width for panel in panels) + gap * (len(panels) + 1)
+    summary = Image.new("RGB", (total_width, max_height + gap * 2), (24, 24, 24))
     x = gap
     for panel in panels:
         summary.paste(panel, (x, gap))
-        x += panel_width + gap
+        x += panel.width + gap
     summary.save(output_path)
 
 
@@ -669,6 +672,7 @@ def run_one(
     flag_review: bool,
     review_min_score: float,
     review_min_margin: float,
+    debug_panel_width: int | None,
 ) -> dict:
     started = time.perf_counter()
     source_stem = input_path.stem
@@ -778,6 +782,7 @@ def run_one(
         before_orientation_debug,
         final_debug,
         debug_dir / f"{source_stem}_debug.png",
+        debug_panel_width,
     )
 
     elapsed_ms = (time.perf_counter() - started) * 1000
@@ -834,6 +839,7 @@ def run(
     flag_review: bool,
     review_min_score: float,
     review_min_margin: float,
+    debug_panel_width: int | None,
 ) -> None:
     if not model_path.exists():
         raise FileNotFoundError(f"Could not find YuNet model: {model_path}")
@@ -876,6 +882,7 @@ def run(
                 flag_review,
                 review_min_score,
                 review_min_margin,
+                debug_panel_width,
             )
         )
 
@@ -928,6 +935,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--review-min-score", type=float, default=0.55)
     parser.add_argument("--review-min-margin", type=float, default=0.08)
+    parser.add_argument(
+        "--debug-panel-width",
+        type=int,
+        help="Resize each debug panel to this width. By default, debug panels are not scaled down.",
+    )
     return parser.parse_args()
 
 
@@ -952,6 +964,7 @@ def main() -> None:
         args.flag_review,
         args.review_min_score,
         args.review_min_margin,
+        args.debug_panel_width,
     )
 
 

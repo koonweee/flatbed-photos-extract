@@ -59,4 +59,4 @@ The final pipeline intentionally does not dewarp curled or non-flat photos. It o
 
 `metadata.csv` records source file names, per-scan photo indexes, source bounding boxes, fitted corners, output sizes, trim amounts, estimated scan rotation, orientation decisions, and classifier scores. `source_rotation_deg_clockwise_estimate` is the rotation of the photo on the scanner bed before rectification. `orientation_deg` is the rotation applied after extraction.
 
-Each input scan gets one debug image at `debug/<scan>_debug.png`. It is arranged left to right in pipeline order: original scan, threshold mask, detected outlines, extracted contact sheet before orientation, and final contact sheet after orientation.
+Each input scan gets one debug image at `debug/<scan>_debug.png`. It is arranged left to right in pipeline order: original scan, threshold mask, detected outlines, extracted contact sheet before orientation, and final contact sheet after orientation. Debug panels are not scaled down by default; use `--debug-panel-width 800` or another width if you want smaller review images.
