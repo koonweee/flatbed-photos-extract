@@ -37,19 +37,8 @@ output/
       scan-2_01.png
     metadata.csv
     debug/
-      batch-contact-sheet.png
-      batch-contact-sheet-before-orientation.png
-      scan-1_original.png
-      scan-1_mask.png
-      scan-1_overlay.png
-      scan-1_contact-sheet.png
-      scan-1_contact-sheet-before-orientation.png
-      scan-1_contact-sheet-after-orientation.png
-      scan-1_original-mask-contact.png
-      pre_orientation/
-        scan-1_01.png
-        scan-1_02.png
-        scan-2_01.png
+      scan-1_debug.png
+      scan-2_debug.png
 ```
 
 ## Pipeline
@@ -70,6 +59,4 @@ The final pipeline intentionally does not dewarp curled or non-flat photos. It o
 
 `metadata.csv` records source file names, per-scan photo indexes, source bounding boxes, fitted corners, output sizes, trim amounts, estimated scan rotation, orientation decisions, and classifier scores. `source_rotation_deg_clockwise_estimate` is the rotation of the photo on the scanner bed before rectification. `orientation_deg` is the rotation applied after extraction.
 
-Per-scan debug files are prefixed with the scan stem. For example, `debug/scan-1_original.png` is the source scan copy, `debug/scan-1_mask.png` is the threshold mask used for candidate detection, and `debug/scan-1_overlay.png` draws rough and refined borders over the original scan. `debug/scan-1_original-mask-contact.png` puts that scan's original, mask, and final contact sheet side by side for quick review.
-
-`debug/pre_orientation/` contains extracted photos after crop/straighten/trim but before orientation correction. `debug/batch-contact-sheet.png` shows all final photos in the batch, while each `debug/<scan>_contact-sheet.png` shows final photos from one source scan.
+Each input scan gets one debug image at `debug/<scan>_debug.png`. It is arranged left to right in pipeline order: original scan, threshold mask, detected outlines, extracted contact sheet before orientation, and final contact sheet after orientation.

@@ -290,9 +290,9 @@ def make_debug_overlay(image_rgb: np.ndarray, detections: list[dict]) -> Image.I
     return overlay
 
 
-def make_contact_sheet(paths: list[Path], output_path: Path, thumb_size: int = 360) -> None:
+def make_contact_sheet_image(paths: list[Path], thumb_size: int = 360) -> Image.Image | None:
     if not paths:
-        return
+        return None
 
     thumbs = []
     for path in paths:
@@ -309,29 +309,51 @@ def make_contact_sheet(paths: list[Path], output_path: Path, thumb_size: int = 3
     for index, tile in enumerate(thumbs):
         row, col = divmod(index, cols)
         sheet.paste(tile, (gap + col * (thumb_size + gap), gap + row * (thumb_size + gap)))
-    sheet.save(output_path)
+    return sheet
 
 
-def make_debug_summary(
-    original_path: Path,
-    mask_path: Path,
-    contact_sheet_path: Path,
+def make_contact_sheet_from_arrays(images: list[np.ndarray], thumb_size: int = 360) -> Image.Image | None:
+    if not images:
+        return None
+
+    thumbs = []
+    for array in images:
+        image = Image.fromarray(cv2.cvtColor(array, cv2.COLOR_BGR2RGB)).convert("RGB")
+        image.thumbnail((thumb_size, thumb_size), Image.Resampling.LANCZOS)
+        tile = Image.new("RGB", (thumb_size, thumb_size), (32, 32, 32))
+        tile.paste(image, ((thumb_size - image.width) // 2, (thumb_size - image.height) // 2))
+        thumbs.append(tile)
+
+    cols = 4
+    rows = math.ceil(len(thumbs) / cols)
+    gap = 14
+    sheet = Image.new("RGB", (cols * thumb_size + (cols + 1) * gap, rows * thumb_size + (rows + 1) * gap), (24, 24, 24))
+    for index, tile in enumerate(thumbs):
+        row, col = divmod(index, cols)
+        sheet.paste(tile, (gap + col * (thumb_size + gap), gap + row * (thumb_size + gap)))
+    return sheet
+
+
+def make_pipeline_debug_image(
+    original: Image.Image,
+    mask: Image.Image,
+    outline: Image.Image,
+    before_orientation: Image.Image | None,
+    final: Image.Image | None,
     output_path: Path,
     panel_width: int = 520,
 ) -> None:
-    if not original_path.exists() or not mask_path.exists() or not contact_sheet_path.exists():
-        return
-
     panels = []
-    for path in (original_path, mask_path, contact_sheet_path):
-        image = Image.open(path).convert("RGB")
+    fallback = Image.new("RGB", (panel_width, panel_width), (24, 24, 24))
+    for image in (original, mask, outline, before_orientation or fallback, final or fallback):
+        image = image.convert("RGB")
         height = max(1, round(image.height * (panel_width / image.width)))
         image = image.resize((panel_width, height), Image.Resampling.LANCZOS)
         panels.append(image)
 
     max_height = max(panel.height for panel in panels)
     gap = 18
-    summary = Image.new("RGB", (panel_width * 3 + gap * 4, max_height + gap * 2), (24, 24, 24))
+    summary = Image.new("RGB", (panel_width * 5 + gap * 6, max_height + gap * 2), (24, 24, 24))
     x = gap
     for panel in panels:
         summary.paste(panel, (x, gap))
@@ -633,7 +655,6 @@ def run_one(
     input_path: Path,
     photos_dir: Path,
     debug_dir: Path,
-    pre_orientation_dir: Path,
     min_area: int,
     threshold: int,
     padding: int,
@@ -658,11 +679,11 @@ def run_one(
 
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    Image.fromarray(image_rgb).save(debug_dir / f"{source_stem}_original.png")
+    original_debug = Image.fromarray(image_rgb)
     candidates = rough_candidates(image_bgr, threshold, min_area)
 
     detections = []
-    pre_orientation_paths = []
+    before_orientation_images = []
     oriented_paths = []
     orientation_elapsed_ms = 0.0
     for index, candidate in enumerate(candidates, start=1):
@@ -690,9 +711,7 @@ def run_one(
         )
 
         filename = f"{source_stem}_{index:02d}.png"
-        pre_orientation_path = pre_orientation_dir / filename
-        cv2.imwrite(str(pre_orientation_path), trimmed)
-        pre_orientation_paths.append(pre_orientation_path)
+        before_orientation_images.append(trimmed)
 
         orientation_started = time.perf_counter()
         orientation = classify_orientation_hybrid(trimmed, detector, gyroscope, max_side)
@@ -748,16 +767,17 @@ def run_one(
         )
 
     _ret, debug_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-    Image.fromarray(debug_mask).save(debug_dir / f"{source_stem}_mask.png")
-    make_debug_overlay(image_rgb, detections).save(debug_dir / f"{source_stem}_overlay.png")
-    make_contact_sheet(pre_orientation_paths, debug_dir / f"{source_stem}_contact-sheet-before-orientation.png")
-    make_contact_sheet(oriented_paths, debug_dir / f"{source_stem}_contact-sheet-after-orientation.png")
-    make_contact_sheet(oriented_paths, debug_dir / f"{source_stem}_contact-sheet.png")
-    make_debug_summary(
-        debug_dir / f"{source_stem}_original.png",
-        debug_dir / f"{source_stem}_mask.png",
-        debug_dir / f"{source_stem}_contact-sheet.png",
-        debug_dir / f"{source_stem}_original-mask-contact.png",
+    mask_debug = Image.fromarray(debug_mask)
+    outline_debug = make_debug_overlay(image_rgb, detections)
+    before_orientation_debug = make_contact_sheet_from_arrays(before_orientation_images)
+    final_debug = make_contact_sheet_image(oriented_paths)
+    make_pipeline_debug_image(
+        original_debug,
+        mask_debug,
+        outline_debug,
+        before_orientation_debug,
+        final_debug,
+        debug_dir / f"{source_stem}_debug.png",
     )
 
     elapsed_ms = (time.perf_counter() - started) * 1000
@@ -788,7 +808,6 @@ def run_one(
         "debug_dir": debug_dir,
         "detections": detections,
         "oriented_paths": oriented_paths,
-        "pre_orientation_paths": pre_orientation_paths,
         "photos": len(detections),
         "needs_review": review_count,
         "elapsed_ms": elapsed_ms,
@@ -825,18 +844,14 @@ def run(
     batch_dir = output_dir / (batch_name or default_batch_name())
     photos_dir = batch_dir / "photos"
     debug_dir = batch_dir / "debug"
-    pre_orientation_dir = debug_dir / "pre_orientation"
     metadata_path = batch_dir / "metadata.csv"
 
     photos_dir.mkdir(parents=True, exist_ok=True)
     debug_dir.mkdir(parents=True, exist_ok=True)
-    pre_orientation_dir.mkdir(parents=True, exist_ok=True)
 
     for path in photos_dir.glob("*.png"):
         path.unlink()
     for path in debug_dir.glob("*.png"):
-        path.unlink()
-    for path in pre_orientation_dir.glob("*.png"):
         path.unlink()
     if metadata_path.exists():
         metadata_path.unlink()
@@ -847,7 +862,6 @@ def run(
                 input_path,
                 photos_dir,
                 debug_dir,
-                pre_orientation_dir,
                 min_area,
                 threshold,
                 padding,
@@ -866,11 +880,7 @@ def run(
         )
 
     all_detections = [detection for summary in summaries for detection in summary["detections"]]
-    all_oriented_paths = [path for summary in summaries for path in summary["oriented_paths"]]
-    all_pre_orientation_paths = [path for summary in summaries for path in summary["pre_orientation_paths"]]
     write_metadata(metadata_path, all_detections)
-    make_contact_sheet(all_oriented_paths, debug_dir / "batch-contact-sheet.png")
-    make_contact_sheet(all_pre_orientation_paths, debug_dir / "batch-contact-sheet-before-orientation.png")
 
     total_elapsed_ms = sum(item["elapsed_ms"] for item in summaries)
     total_orientation_ms = sum(item["orientation_elapsed_ms"] for item in summaries)
