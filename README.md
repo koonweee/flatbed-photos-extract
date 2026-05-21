@@ -1,10 +1,10 @@
 # flatbed-photos-extract
 
-Extract individual photos from one or more flatbed scan images. The script detects photo paper on a dark scanner background, crops each photo to its border, straightens it, applies a conservative dark-edge trim, and rotates it using a hybrid local orientation classifier.
+Extract individual photos from flatbed scans containing one or more photos on a dark background.
+
+The extractor crops each detected photo to its paper border, straightens it, trims dark edge residue, and applies automatic orientation correction.
 
 ## Install
-
-From this directory:
 
 ```bash
 python3 -m venv .venv
@@ -12,27 +12,28 @@ python3 -m venv .venv
 pip install -r requirements.txt
 ```
 
-The YuNet face detector is included in `models/`. The GyroScope orientation model is loaded through Hugging Face Transformers and may need to be downloaded the first time it is used.
+The YuNet face detector is included in `models/`. The GyroScope orientation model is loaded through Hugging Face Transformers on first use.
 
 ## Usage
 
 ```bash
-python extract.py /path/to/scan-1.png /path/to/scan-2.png --output-dir output
+python extract.py scan-1.png scan-2.png --output-dir output
 ```
 
-Each command creates one batch folder under `output/`. By default the batch name is the current datetime. You can name it explicitly:
+Each run creates one batch folder under `output/`. The batch name defaults to the current datetime.
 
 ```bash
-python extract.py /path/to/scan-1.png /path/to/scan-2.png --output-dir output --batch-name family-box-b
+python extract.py scan-1.png scan-2.png --batch-name family-box-b
 ```
 
-Skip debug PNGs when you only want final photos and metadata:
+Useful options:
 
 ```bash
-python extract.py /path/to/scan-1.png --no-debug
+python extract.py scan.png --no-debug
+python extract.py scan.png --debug-panel-width 800
 ```
 
-All photos from all input scans are written into the same batch:
+## Output
 
 ```text
 output/
@@ -47,24 +48,22 @@ output/
       scan-2_debug.png
 ```
 
+`photos/` contains the extracted images. They are not intentionally scaled down; each output is warped at the detected source-pixel border size, then trimmed and rotated.
+
+`metadata.csv` records the source scan, per-scan photo index, fitted corners, trim amounts, output dimensions, and orientation scores.
+
+Each debug PNG shows the pipeline for one scan from left to right:
+
+```text
+original -> mask -> outline -> before orientation -> final
+```
+
 ## Pipeline
 
-1. Threshold the scan to separate light photo paper from the dark scanner background.
-2. Find connected paper-like components and reject implausible regions.
-3. Estimate each photo's outer border from contour geometry, then refine it by fitting lines to the detected paper edges.
-4. Perspective-warp the detected border so the photo edges align with the output image edges.
-5. Apply a conservative trim only where dark scanner background remains on the warped edges.
-6. Classify orientation locally. YuNet is used when faces are detected; GyroScope is used as a general fallback. The best rotation is applied automatically.
-7. Write final photos, metadata, and debug artifacts.
-
-The final pipeline intentionally does not dewarp curled or non-flat photos. It only straightens the detected outer border and trims dark edge residue.
-
-## Reading Outputs
-
-`photos/` contains the processed images intended for import into a gallery or archive.
-
-`metadata.csv` records source file names, per-scan photo indexes, source bounding boxes, fitted corners, output sizes, trim amounts, estimated scan rotation, orientation decisions, and classifier scores. `source_rotation_deg_clockwise_estimate` is the rotation of the photo on the scanner bed before rectification. `orientation_deg` is the rotation applied after extraction.
-
-Each input scan gets one debug image at `debug/<scan>_debug.png`. It is arranged left to right in pipeline order: original scan, threshold mask, detected outlines, extracted contact sheet before orientation, and final contact sheet after orientation. Debug panels are not scaled down by default; use `--debug-panel-width 800` or another width if you want smaller review images.
-
-The extracted photos in `photos/` are not intentionally scaled down. Each photo is warped at the detected source-pixel border size, then trimmed and rotated.
+1. Threshold the scan to separate photo paper from the dark background.
+2. Find paper-like connected components.
+3. Fit and refine each photo's outer border.
+4. Perspective-warp each photo to a rectangle.
+5. Trim remaining dark scanner edges.
+6. Rotate using YuNet face detection or GyroScope fallback.
+7. Write photos, metadata, and optional debug PNGs.
