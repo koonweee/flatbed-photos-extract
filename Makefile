@@ -2,11 +2,12 @@
 export
 
 DATA_DIR ?= $(PWD)/data
+DEV_PORT ?= 8001
 
 .PHONY: dev prod prod-build prod-logs test cli-help
 
 dev:
-	DATA_DIR='$(DATA_DIR)' uvicorn 'web.app:create_app' --factory --reload
+	DATA_DIR='$(DATA_DIR)' uvicorn 'web.app:create_app' --factory --reload --port $(DEV_PORT)
 
 prod:
 	docker compose up -d

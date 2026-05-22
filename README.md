@@ -40,7 +40,7 @@ cp .env.example .env
 make dev
 ```
 
-Open `http://localhost:8000`.
+Open `http://localhost:8001`.
 
 ## Environment variables (for web)
 
@@ -49,6 +49,7 @@ Open `http://localhost:8000`.
 | `APP_PASSWORD` | blank | Shared login password. Leave blank to disable auth. |
 | `SESSION_SECRET` | `APP_PASSWORD` when set | Cookie-signing key that keeps login sessions valid across restarts. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(32))'`. |
 | `DATA_DIR` | `/app/data` in Docker, `data` locally | Database, uploads, outputs, debug files, and downloads. |
+| `DEV_PORT` | `8001` | Local development server port used by `make dev`. |
 | `MAX_PARALLEL_SCANS` | `2` | Global scan concurrency limit. |
 | `WRITE_DEBUG` | `true` | Write per-scan debug PNGs. |
 | `DEBUG_PANEL_WIDTH` | blank | Optional debug PNG width in pixels. |
