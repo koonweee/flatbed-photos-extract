@@ -42,6 +42,9 @@ make dev
 
 Open `http://localhost:8001`.
 
+Local dev stores app state in `./data-dev`. Docker production stores app state
+in `./data`.
+
 ## Environment variables (for web)
 
 | Variable | Default | Purpose |
@@ -49,6 +52,7 @@ Open `http://localhost:8001`.
 | `APP_PASSWORD` | blank | Shared login password. Leave blank to disable auth. |
 | `SESSION_SECRET` | `APP_PASSWORD` when set | Cookie-signing key that keeps login sessions valid across restarts. Generate with `python -c 'import secrets; print(secrets.token_urlsafe(32))'`. |
 | `DATA_DIR` | `/app/data` in Docker, `data` locally | Database, uploads, outputs, debug files, and downloads. |
+| `DEV_DATA_DIR` | `./data-dev` | Local development database, uploads, outputs, debug files, and downloads. |
 | `DEV_PORT` | `8001` | Local development server port used by `make dev`. |
 | `MAX_PARALLEL_SCANS` | `2` | Global scan concurrency limit. |
 | `WRITE_DEBUG` | `true` | Write per-scan debug PNGs. |
