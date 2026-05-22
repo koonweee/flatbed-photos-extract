@@ -1,0 +1,105 @@
+<div
+  id="jobs-panel"
+  {% if auto_refresh %}
+  hx-get="/active/fragment"
+  hx-trigger="every 1.5s"
+  hx-swap="outerHTML"
+  data-refresh-url="/active/fragment"
+  {% endif %}
+>
+  {% if notice %}
+  <div class="error" role="alert">{{ notice }}</div>
+  {% endif %}
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Job</th>
+        <th scope="col">Status</th>
+        <th scope="col">Progress</th>
+        <th scope="col">ETA</th>
+        <th scope="col">Created</th>
+        <th scope="col">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr
+        {% if job["status"] == "completed" %}
+        class="clickable-row"
+        data-href="/jobs/{{ job["id"] }}"
+        tabindex="0"
+        aria-label="Open {{ job["title"] }}"
+        {% endif %}
+      >
+        <td data-label="Job">
+          {% if job["status"] == "completed" %}
+          <a class="job-title-link" href="/jobs/{{ job["id"] }}"><strong>{{ job["title"] }}</strong></a>
+          {% else %}
+          <strong>{{ job["title"] }}</strong>
+          {% endif %}
+          {% if job["error_message"] %}
+          <div class="error-inline">{{ job["error_message"] }}</div>
+          {% endif %}
+          {% if job["files"] %}
+          <ol class="file-statuses">
+            {% for file in job["files"] %}
+            <li>
+              <span>{{ file["path"].split("/")[-1] }}</span>
+              <span class="status status-{{ file["status"] }}">{{ file["status"] }}</span>
+              {% if file["error_message"] %}
+              <span class="error-inline">{{ file["error_message"] }}</span>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ol>
+          {% endif %}
+        </td>
+        <td data-label="Status"><span class="status status-{{ job["status"] }}">{{ job["status"] }}</span></td>
+        <td data-label="Progress">
+          <div class="progress" aria-label="{{ job["progress_label"] }} scans completed">
+            <span style="width: {{ job["progress_percent"] }}%"></span>
+          </div>
+          <span class="muted">{{ job["progress_label"] }}</span>
+        </td>
+        <td data-label="ETA">{% if job["eta"] %}{{ job["eta"] }}{% else %}<span class="muted">-</span>{% endif %}</td>
+        <td data-label="Created">{{ job["created_at"] }}</td>
+        <td data-label="Actions">
+          <div class="actions">
+            {% if job["status"] in ["queued", "running"] %}
+            <form
+              method="post"
+              action="/jobs/{{ job["id"] }}/abort"
+              hx-post="/jobs/{{ job["id"] }}/abort"
+              hx-target="#jobs-panel"
+              hx-swap="outerHTML"
+              hx-confirm="Abort this job?"
+            >
+              <button class="danger" type="submit">Abort</button>
+            </form>
+            {% elif job["status"] == "cancelling" %}
+            <button type="button" disabled>Aborting</button>
+            {% elif job["status"] in ["completed", "failed", "cancelled"] %}
+            <form
+              method="post"
+              action="/jobs/{{ job["id"] }}/delete"
+              hx-post="/jobs/{{ job["id"] }}/delete"
+              hx-target="#jobs-panel"
+              hx-swap="outerHTML"
+              hx-confirm="Delete this job and its files?"
+            >
+              <button class="danger" type="submit">Delete</button>
+            </form>
+            {% else %}
+            <span class="muted">-</span>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">{{ empty_message }}</p>
+  {% endif %}
+</div>

@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 import math
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +18,21 @@ from torchvision import transforms
 from transformers import AutoModelForImageClassification
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+EXTRACTOR_DIR = Path(__file__).resolve().parent
+DEFAULT_MODEL_PATH = EXTRACTOR_DIR / "models" / "face_detection_yunet_2023mar.onnx"
+DEFAULT_GYROSCOPE_MODEL = "LH-Tech-AI/GyroScope"
+DEFAULT_MIN_AREA = 45_000
+DEFAULT_THRESHOLD = 90
+DEFAULT_PADDING = 45
+DEFAULT_DARK_THRESHOLD = 35
+DEFAULT_DARK_FRACTION = 0.15
+DEFAULT_MAX_TRIM_PX = 10
+DEFAULT_MAX_TRIM_FRACTION = 0.008
+DEFAULT_EDGE_RATIO_BAND = 4
+DEFAULT_MAX_SIDE = 384
+DEFAULT_SCORE_THRESHOLD = 0.55
+DEFAULT_REVIEW_MIN_SCORE = 0.55
+DEFAULT_REVIEW_MIN_MARGIN = 0.08
 ROTATIONS = (0, 90, 180, 270)
 ANGLE_BY_CLASS = {0: 0, 1: 90, 2: 180, 3: 270}
 METADATA_COLUMNS = [
@@ -72,6 +86,20 @@ METADATA_COLUMNS = [
     "refine_reason",
     "contour_area",
 ]
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    input_path: Path
+    photos_dir: Path
+    debug_dir: Path
+    source_stem: str
+    detections: list[dict]
+    oriented_paths: list[Path]
+    photos: int
+    needs_review: int
+    elapsed_ms: float
+    orientation_elapsed_ms: float
 
 
 def default_batch_name() -> str:
@@ -364,75 +392,101 @@ def make_pipeline_debug_image(
     summary.save(output_path)
 
 
+def metadata_row(detection: dict) -> list:
+    x, y, w, h = detection["bbox"]
+    tl, tr, br, bl = detection["quad"]
+    return [
+        detection["source_file"],
+        detection["source_stem"],
+        detection["source_photo_index"],
+        detection["filename"],
+        x,
+        y,
+        w,
+        h,
+        round(float(tl[0]), 3),
+        round(float(tl[1]), 3),
+        round(float(tr[0]), 3),
+        round(float(tr[1]), 3),
+        round(float(br[0]), 3),
+        round(float(br[1]), 3),
+        round(float(bl[0]), 3),
+        round(float(bl[1]), 3),
+        detection["width"],
+        detection["height"],
+        detection["trimmed_width"],
+        detection["trimmed_height"],
+        detection["trim_left"],
+        detection["trim_top"],
+        detection["trim_right"],
+        detection["trim_bottom"],
+        detection["trim_left"] + detection["trim_top"] + detection["trim_right"] + detection["trim_bottom"],
+        round((detection["trim_left"] + detection["trim_right"]) / detection["width"], 6),
+        round((detection["trim_top"] + detection["trim_bottom"]) / detection["height"], 6),
+        round(detection["dark_edge_ratio_before"], 6),
+        round(detection["dark_edge_ratio_after"], 6),
+        round(detection["angle"], 6),
+        detection["orientation_deg"],
+        round(detection["orientation_score"], 6),
+        round(detection["orientation_margin"], 6),
+        detection["face_count"],
+        detection["orientation_method"],
+        detection["needs_review"],
+        " ".join(
+            f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
+            for item in detection["orientation_scores"]
+        ),
+        detection["yunet_orientation_deg"],
+        round(detection["yunet_orientation_score"], 6),
+        round(detection["yunet_orientation_margin"], 6),
+        detection["yunet_face_count"],
+        " ".join(
+            f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
+            for item in detection["yunet_orientation_scores"]
+        ),
+        detection["gyroscope_orientation_deg"],
+        round(detection["gyroscope_orientation_score"], 6),
+        round(detection["gyroscope_orientation_margin"], 6),
+        " ".join(
+            f"{item['rotation']}:{item['score']:.6f}"
+            for item in detection["gyroscope_orientation_scores"]
+        ),
+        detection["refined"],
+        detection["refine_reason"],
+        round(detection["area"], 1),
+    ]
+
+
 def write_metadata(metadata_path: Path, detections: list[dict]) -> None:
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
     with metadata_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(METADATA_COLUMNS)
-        for detection in detections:
-            x, y, w, h = detection["bbox"]
-            tl, tr, br, bl = detection["quad"]
-            writer.writerow(
-                [
-                    detection["source_file"],
-                    detection["source_stem"],
-                    detection["source_photo_index"],
-                    detection["filename"],
-                    x,
-                    y,
-                    w,
-                    h,
-                    round(float(tl[0]), 3),
-                    round(float(tl[1]), 3),
-                    round(float(tr[0]), 3),
-                    round(float(tr[1]), 3),
-                    round(float(br[0]), 3),
-                    round(float(br[1]), 3),
-                    round(float(bl[0]), 3),
-                    round(float(bl[1]), 3),
-                    detection["width"],
-                    detection["height"],
-                    detection["trimmed_width"],
-                    detection["trimmed_height"],
-                    detection["trim_left"],
-                    detection["trim_top"],
-                    detection["trim_right"],
-                    detection["trim_bottom"],
-                    detection["trim_left"] + detection["trim_top"] + detection["trim_right"] + detection["trim_bottom"],
-                    round((detection["trim_left"] + detection["trim_right"]) / detection["width"], 6),
-                    round((detection["trim_top"] + detection["trim_bottom"]) / detection["height"], 6),
-                    round(detection["dark_edge_ratio_before"], 6),
-                    round(detection["dark_edge_ratio_after"], 6),
-                    round(detection["angle"], 6),
-                    detection["orientation_deg"],
-                    round(detection["orientation_score"], 6),
-                    round(detection["orientation_margin"], 6),
-                    detection["face_count"],
-                    detection["orientation_method"],
-                    detection["needs_review"],
-                    " ".join(
-                        f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
-                        for item in detection["orientation_scores"]
-                    ),
-                    detection["yunet_orientation_deg"],
-                    round(detection["yunet_orientation_score"], 6),
-                    round(detection["yunet_orientation_margin"], 6),
-                    detection["yunet_face_count"],
-                    " ".join(
-                        f"{item['rotation']}:{item['score']:.6f}/{item['face_count']}"
-                        for item in detection["yunet_orientation_scores"]
-                    ),
-                    detection["gyroscope_orientation_deg"],
-                    round(detection["gyroscope_orientation_score"], 6),
-                    round(detection["gyroscope_orientation_margin"], 6),
-                    " ".join(
-                        f"{item['rotation']}:{item['score']:.6f}"
-                        for item in detection["gyroscope_orientation_scores"]
-                    ),
-                    detection["refined"],
-                    detection["refine_reason"],
-                    round(detection["area"], 1),
+        writer.writerows(metadata_row(detection) for detection in detections)
+
+
+def append_metadata(metadata_path: Path, detections: list[dict]) -> None:
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    new_source_stems = {detection["source_stem"] for detection in detections}
+    existing_rows = []
+    if metadata_path.exists() and metadata_path.stat().st_size:
+        with metadata_path.open(newline="") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, None)
+            if header == METADATA_COLUMNS:
+                existing_rows = [
+                    row
+                    for row in reader
+                    if len(row) > 1 and row[1] not in new_source_stems
                 ]
-            )
+
+    temp_path = metadata_path.with_suffix(f"{metadata_path.suffix}.tmp")
+    with temp_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(METADATA_COLUMNS)
+        writer.writerows(existing_rows)
+        writer.writerows(metadata_row(detection) for detection in detections)
+    temp_path.replace(metadata_path)
 
 
 def rotate_image(image: np.ndarray, degrees: int) -> np.ndarray:
@@ -654,29 +708,46 @@ def trim_dark_edges(
     }
 
 
-def run_one(
+def process_scan(
     input_path: Path,
     photos_dir: Path,
     debug_dir: Path,
-    min_area: int,
-    threshold: int,
-    padding: int,
-    dark_threshold: int,
-    dark_fraction: float,
-    max_trim_px: int,
-    max_trim_fraction: float,
-    edge_ratio_band: int,
-    detector: cv2.FaceDetectorYN,
-    gyroscope: GyroScopeClassifier,
-    max_side: int,
-    flag_review: bool,
-    review_min_score: float,
-    review_min_margin: float,
-    debug_panel_width: int | None,
-    write_debug: bool,
-) -> dict:
+    source_stem: str,
+    write_debug: bool = True,
+    debug_panel_width: int | None = None,
+    *,
+    min_area: int = DEFAULT_MIN_AREA,
+    threshold: int = DEFAULT_THRESHOLD,
+    padding: int = DEFAULT_PADDING,
+    dark_threshold: int = DEFAULT_DARK_THRESHOLD,
+    dark_fraction: float = DEFAULT_DARK_FRACTION,
+    max_trim_px: int = DEFAULT_MAX_TRIM_PX,
+    max_trim_fraction: float = DEFAULT_MAX_TRIM_FRACTION,
+    edge_ratio_band: int = DEFAULT_EDGE_RATIO_BAND,
+    model_path: Path = DEFAULT_MODEL_PATH,
+    gyroscope_model: str = DEFAULT_GYROSCOPE_MODEL,
+    max_side: int = DEFAULT_MAX_SIDE,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
+    flag_review: bool = False,
+    review_min_score: float = DEFAULT_REVIEW_MIN_SCORE,
+    review_min_margin: float = DEFAULT_REVIEW_MIN_MARGIN,
+    detector: cv2.FaceDetectorYN | None = None,
+    gyroscope: GyroScopeClassifier | None = None,
+) -> ScanResult:
     started = time.perf_counter()
-    source_stem = input_path.stem
+    input_path = Path(input_path)
+    photos_dir = Path(photos_dir)
+    debug_dir = Path(debug_dir)
+
+    photos_dir.mkdir(parents=True, exist_ok=True)
+    if write_debug:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+    if detector is None:
+        if not model_path.exists():
+            raise FileNotFoundError(f"Could not find YuNet model: {model_path}")
+        detector = make_detector(model_path, 320, 320, score_threshold)
+    if gyroscope is None:
+        gyroscope = GyroScopeClassifier(gyroscope_model)
 
     image_bgr = cv2.imread(str(input_path), cv2.IMREAD_COLOR)
     if image_bgr is None:
@@ -810,181 +881,15 @@ def run_one(
             f"margin={detection['orientation_margin']:.4f} faces={detection['face_count']} "
             f"review={detection['needs_review']}"
         )
-    return {
-        "input": input_path,
-        "photos_dir": photos_dir,
-        "debug_dir": debug_dir,
-        "detections": detections,
-        "oriented_paths": oriented_paths,
-        "photos": len(detections),
-        "needs_review": review_count,
-        "elapsed_ms": elapsed_ms,
-        "orientation_elapsed_ms": orientation_elapsed_ms,
-    }
-
-
-def run(
-    input_paths: list[Path],
-    output_dir: Path,
-    batch_name: str | None,
-    min_area: int,
-    threshold: int,
-    padding: int,
-    dark_threshold: int,
-    dark_fraction: float,
-    max_trim_px: int,
-    max_trim_fraction: float,
-    edge_ratio_band: int,
-    model_path: Path,
-    gyroscope_model: str,
-    max_side: int,
-    score_threshold: float,
-    flag_review: bool,
-    review_min_score: float,
-    review_min_margin: float,
-    debug_panel_width: int | None,
-    write_debug: bool,
-) -> None:
-    if not model_path.exists():
-        raise FileNotFoundError(f"Could not find YuNet model: {model_path}")
-
-    detector = make_detector(model_path, 320, 320, score_threshold)
-    gyroscope = GyroScopeClassifier(gyroscope_model)
-    summaries = []
-    batch_dir = output_dir / (batch_name or default_batch_name())
-    photos_dir = batch_dir / "photos"
-    debug_dir = batch_dir / "debug"
-    metadata_path = batch_dir / "metadata.csv"
-
-    photos_dir.mkdir(parents=True, exist_ok=True)
-
-    for path in photos_dir.glob("*.png"):
-        path.unlink()
-    if debug_dir.exists():
-        for path in debug_dir.glob("*.png"):
-            path.unlink()
-        if not write_debug:
-            try:
-                debug_dir.rmdir()
-            except OSError:
-                pass
-    if write_debug:
-        debug_dir.mkdir(parents=True, exist_ok=True)
-    if metadata_path.exists():
-        metadata_path.unlink()
-
-    for input_path in input_paths:
-        summaries.append(
-            run_one(
-                input_path,
-                photos_dir,
-                debug_dir,
-                min_area,
-                threshold,
-                padding,
-                dark_threshold,
-                dark_fraction,
-                max_trim_px,
-                max_trim_fraction,
-                edge_ratio_band,
-                detector,
-                gyroscope,
-                max_side,
-                flag_review,
-                review_min_score,
-                review_min_margin,
-                debug_panel_width,
-                write_debug,
-            )
-        )
-
-    all_detections = [detection for summary in summaries for detection in summary["detections"]]
-    write_metadata(metadata_path, all_detections)
-
-    total_elapsed_ms = sum(item["elapsed_ms"] for item in summaries)
-    total_orientation_ms = sum(item["orientation_elapsed_ms"] for item in summaries)
-    total_photos = sum(item["photos"] for item in summaries)
-    total_review = sum(item["needs_review"] for item in summaries)
-    print(
-        "summary: "
-        f"batch={batch_dir} inputs={len(summaries)} photos={total_photos} needs_review={total_review} "
-        f"total_ms={total_elapsed_ms:.1f} orientation_ms={total_orientation_ms:.1f} "
-        f"avg_orientation_ms_per_photo={(total_orientation_ms / total_photos if total_photos else 0):.1f}"
+    return ScanResult(
+        input_path=input_path,
+        photos_dir=photos_dir,
+        debug_dir=debug_dir,
+        source_stem=source_stem,
+        detections=detections,
+        oriented_paths=oriented_paths,
+        photos=len(detections),
+        needs_review=review_count,
+        elapsed_ms=elapsed_ms,
+        orientation_elapsed_ms=orientation_elapsed_ms,
     )
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Extract individual cropped and oriented photos from one or more flatbed scans."
-    )
-    parser.add_argument("inputs", type=Path, nargs="+", help="Flatbed scan image(s) to process.")
-    parser.add_argument("--output-dir", type=Path, default=Path("output"))
-    parser.add_argument(
-        "--batch-name",
-        help="Name for this extraction batch. Defaults to the current datetime, e.g. 20260521-231500.",
-    )
-    parser.add_argument("--min-area", type=int, default=45_000)
-    parser.add_argument("--threshold", type=int, default=90)
-    parser.add_argument("--padding", type=int, default=45)
-    parser.add_argument("--dark-threshold", type=int, default=35)
-    parser.add_argument("--dark-fraction", type=float, default=0.15)
-    parser.add_argument("--max-trim-px", type=int, default=10)
-    parser.add_argument("--max-trim-fraction", type=float, default=0.008)
-    parser.add_argument("--edge-ratio-band", type=int, default=4)
-    parser.add_argument(
-        "--model",
-        type=Path,
-        default=SCRIPT_DIR / "models" / "face_detection_yunet_2023mar.onnx",
-        help="Path to the YuNet ONNX face detector.",
-    )
-    parser.add_argument("--gyroscope-model", default="LH-Tech-AI/GyroScope")
-    parser.add_argument("--max-side", type=int, default=384)
-    parser.add_argument("--score-threshold", type=float, default=0.55)
-    parser.add_argument(
-        "--flag-review",
-        action="store_true",
-        help="Flag low-confidence orientation results in metadata. By default, always accept the best-scoring rotation.",
-    )
-    parser.add_argument("--review-min-score", type=float, default=0.55)
-    parser.add_argument("--review-min-margin", type=float, default=0.08)
-    parser.add_argument(
-        "--debug-panel-width",
-        type=int,
-        help="Resize each debug panel to this width. By default, debug panels are not scaled down.",
-    )
-    parser.add_argument(
-        "--no-debug",
-        action="store_true",
-        help="Do not write per-scan debug PNGs.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    run(
-        args.inputs,
-        args.output_dir,
-        args.batch_name,
-        args.min_area,
-        args.threshold,
-        args.padding,
-        args.dark_threshold,
-        args.dark_fraction,
-        args.max_trim_px,
-        args.max_trim_fraction,
-        args.edge_ratio_band,
-        args.model,
-        args.gyroscope_model,
-        args.max_side,
-        args.score_threshold,
-        args.flag_review,
-        args.review_min_score,
-        args.review_min_margin,
-        args.debug_panel_width,
-        not args.no_debug,
-    )
-
-
-if __name__ == "__main__":
-    main()

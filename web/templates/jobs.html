@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - Flatbed Photos{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <h1>{{ title }}</h1>
+  {% include "_jobs_table.html" %}
+</section>
+{% endblock %}

@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      DATA_DIR: /app/data
+      MAX_PARALLEL_SCANS: ${MAX_PARALLEL_SCANS:-2}
+      WRITE_DEBUG: ${WRITE_DEBUG:-true}
+      DEBUG_PANEL_WIDTH: ${DEBUG_PANEL_WIDTH:-}
+      MIN_FREE_DISK_GB: ${MIN_FREE_DISK_GB:-10}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data

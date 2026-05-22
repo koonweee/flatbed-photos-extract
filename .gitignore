@@ -1,7 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.env
 .DS_Store
+
+# Web app runtime state.
+/data/
 
 # Generated extraction batches.
 /output/

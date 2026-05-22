@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Flatbed Photos{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/upload">Flatbed Photos</a>
+      {% if active %}
+      <nav aria-label="Primary">
+        <a href="/upload" {% if active == "upload" %}aria-current="page"{% endif %}>Upload</a>
+        <a href="/active" {% if active == "active" %}aria-current="page"{% endif %}>Active</a>
+        <a href="/completed" {% if active == "completed" %}aria-current="page"{% endif %}>Completed</a>
+      </nav>
+      <form method="post" action="/logout">
+        <button type="submit">Log out</button>
+      </form>
+      {% endif %}
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+    <script>
+      if (!window.htmx) {
+        window.setInterval(async () => {
+          const element = document.querySelector("[data-refresh-url]");
+          if (!element) {
+            return;
+          }
+          const response = await fetch(element.dataset.refreshUrl, {headers: {"X-Requested-With": "fetch"}});
+          if (response.ok) {
+            element.outerHTML = await response.text();
+          }
+        }, 1500);
+      }
+      document.addEventListener("click", (event) => {
+        const row = event.target.closest(".clickable-row");
+        if (!row || event.target.closest("a, button, form, input")) {
+          return;
+        }
+        window.location.href = row.dataset.href;
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        const row = event.target.closest(".clickable-row");
+        if (!row || event.target.closest("a, button, form, input")) {
+          return;
+        }
+        event.preventDefault();
+        window.location.href = row.dataset.href;
+      });
+    </script>
+  </body>
+</html>

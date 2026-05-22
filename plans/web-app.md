@@ -36,10 +36,10 @@ Move the current CLI implementation behind an importable library while keeping t
 
 Implementation:
 - Create package modules such as:
-  - `flatbed_photos_extract/extractor.py`
-  - `flatbed_photos_extract/batch.py`
-  - `flatbed_photos_extract/cli.py`
-- Keep `extract.py` as a thin compatibility entrypoint.
+  - `extractor/core.py`
+  - `extractor/batch.py`
+  - `cli/main.py`
+- Use `python -m cli` as the CLI entrypoint.
 - Expose a per-scan API suitable for workers:
 
 ```python
@@ -93,6 +93,7 @@ High-value tests:
 - Correct password creates a usable session.
 - App restarts without losing job metadata.
 - Docker container can read/write the mounted `data/` directory.
+- Verify with `$agent-browser` that login redirects, invalid credentials, valid login, and protected-page navigation behave correctly in a real browser session.
 
 ## Milestone 3: Upload UX and Job Creation
 
@@ -120,6 +121,7 @@ High-value tests:
 - Blank title creates timestamp-based job.
 - Server rejects empty submit.
 - Server rejects submit when simulated free space is under threshold.
+- Verify with `$agent-browser` that file selection previews render, remove controls update the selection, submit creates a queued job, and validation messages are visible and actionable.
 
 ## Milestone 4: Queue and Worker Pool
 
@@ -156,6 +158,7 @@ High-value tests:
 - Set `MAX_PARALLEL_SCANS=2` and verify two scans can run concurrently.
 - Simulate one scan failure and verify job state/failure messaging.
 - ETA is present for running jobs and absent or pending for queued jobs.
+- Verify with `$agent-browser` that the active jobs page updates progress, queue order, statuses, and ETA without a manual refresh.
 
 ## Milestone 5: Abort, Delete, and Cleanup Semantics
 
@@ -180,6 +183,7 @@ High-value tests:
 - Delete completed job and verify folder is removed.
 - Attempt delete on running job and verify it is blocked or converted to abort flow.
 - Restart app after cancellation and verify state is consistent.
+- Verify with `$agent-browser` that abort/delete controls are reachable, confirmable where needed, disabled or hidden in invalid states, and reflected in the UI without a manual refresh.
 
 ## Milestone 6: Job Detail Views and Downloads
 
@@ -207,6 +211,7 @@ High-value tests:
 - Zip download includes all output photos.
 - Zip download includes metadata.
 - Mobile viewport shows usable gallery layout.
+- Verify with `$agent-browser` that completed-job navigation, input/output galleries, debug viewer presence/absence, metadata link, and download-all flow work in desktop and mobile viewports.
 
 ## Milestone 7: Polish, Docker, and Operational Checks
 
@@ -237,6 +242,7 @@ High-value tests:
 - App restart after completed jobs exist.
 - Low-disk guard works in Docker-mounted data dir.
 - Manual responsive check on mobile and desktop widths.
+- Verify with `$agent-browser` that the main workflows remain usable at mobile and desktop viewport sizes, with no overlapping controls, unreadable text, or blocked primary actions.
 
 ## Default Configuration
 

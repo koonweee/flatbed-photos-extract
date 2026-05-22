@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Upload - Flatbed Photos{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <h1>Upload scans</h1>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <form class="stack" method="post" action="/upload" enctype="multipart/form-data" data-upload-form>
+    <label for="title">Job title</label>
+    <input id="title" name="title" type="text" placeholder="Timestamp title when blank">
+
+    <label class="upload-drop" for="files">
+      <span>Choose scan images</span>
+      <span class="muted">JPG, PNG, TIFF, BMP, GIF, or WebP</span>
+    </label>
+    <input id="files" name="files" type="file" accept="image/*,.tif,.tiff" multiple data-file-input>
+
+    <div class="selected-files" data-file-list aria-live="polite"></div>
+    <button type="submit">Create queued job</button>
+  </form>
+</section>
+
+<script>
+  const form = document.querySelector("[data-upload-form]");
+  const input = document.querySelector("[data-file-input]");
+  const list = document.querySelector("[data-file-list]");
+  let selectedFiles = [];
+
+  function syncFileInput() {
+    const transfer = new DataTransfer();
+    selectedFiles.forEach((file) => transfer.items.add(file));
+    input.files = transfer.files;
+  }
+
+  function renderSelectedFiles() {
+    list.replaceChildren();
+    if (selectedFiles.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No files selected.";
+      list.append(empty);
+      return;
+    }
+
+    selectedFiles.forEach((file, index) => {
+      const row = document.createElement("div");
+      row.className = "selected-file";
+
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = URL.createObjectURL(file);
+      image.onload = () => URL.revokeObjectURL(image.src);
+
+      const name = document.createElement("span");
+      name.textContent = file.name;
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        selectedFiles.splice(index, 1);
+        syncFileInput();
+        renderSelectedFiles();
+      });
+
+      row.append(image, name, remove);
+      list.append(row);
+    });
+  }
+
+  input.addEventListener("change", () => {
+    selectedFiles = Array.from(input.files);
+    renderSelectedFiles();
+  });
+
+  form.addEventListener("submit", (event) => {
+    if (selectedFiles.length === 0 && input.files.length > 0) {
+      selectedFiles = Array.from(input.files);
+    }
+    syncFileInput();
+    if (selectedFiles.length === 0) {
+      event.preventDefault();
+      renderSelectedFiles();
+    }
+  });
+
+  renderSelectedFiles();
+</script>
+{% endblock %}

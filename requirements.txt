@@ -4,3 +4,10 @@ pillow
 torch
 torchvision
 transformers
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+jinja2
+python-multipart
+itsdangerous
+httpx==0.27.2
+pytest
