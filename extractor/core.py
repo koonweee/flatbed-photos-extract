@@ -33,7 +33,31 @@ DEFAULT_MAX_SIDE = 384
 DEFAULT_SCORE_THRESHOLD = 0.55
 DEFAULT_REVIEW_MIN_SCORE = 0.55
 DEFAULT_REVIEW_MIN_MARGIN = 0.08
+DEFAULT_LIGHT_BACKGROUND_THRESHOLD = 210
+DEFAULT_PHOTO_MAX_ASPECT = 2.0
+DEFAULT_DOCUMENT_MAX_ASPECT = 3.8
+DEFAULT_PHOTO_MAX_AREA_FRACTION = 0.2
+DEFAULT_DOCUMENT_MAX_AREA_FRACTION = 0.65
+DEFAULT_DOCUMENT_MIN_SHORT_SIDE = 450
+DEFAULT_MIN_SIZE = 250
+DEFAULT_EDGE_MARGIN = 5
+DEFAULT_BACKGROUND_CONTRAST_DELTA = 30
+DEFAULT_BACKGROUND_COLOR_DISTANCE = 42.0
+DEFAULT_BACKGROUND_TRIM_FRACTION = 0.55
+DEFAULT_BACKGROUND_MAX_TRIM_PX = 28
+DEFAULT_BACKGROUND_MAX_TRIM_FRACTION = 0.018
+DEFAULT_TRANSITION_LIGHT_BACKGROUND_MIN = 128.0
+DEFAULT_TRANSITION_MIN_SCORE = 18.0
+DEFAULT_TRANSITION_STEP_PX = 7
+DEFAULT_TRANSITION_OUTSIDE_RADIUS = 42
+DEFAULT_TRANSITION_INSIDE_RADIUS = 56
+DEFAULT_TRANSITION_SAMPLE_GAP_PX = 5
+DEFAULT_TRANSITION_MAX_SHIFT_PX = 44.0
+DEFAULT_TRANSITION_MIN_POINTS = 24
+DEFAULT_TRANSITION_MIN_AREA_RATIO = 0.90
+DEFAULT_TRANSITION_MAX_AREA_RATIO = 1.08
 ROTATIONS = (0, 90, 180, 270)
+SIDES = ("top", "right", "bottom", "left")
 ANGLE_BY_CLASS = {0: 0, 1: 90, 2: 180, 3: 270}
 METADATA_COLUMNS = [
     "source_file",
@@ -100,6 +124,17 @@ class ScanResult:
     needs_review: int
     elapsed_ms: float
     orientation_elapsed_ms: float
+
+
+@dataclass(frozen=True)
+class TransitionSide:
+    points: np.ndarray
+    line: tuple[float, float, float] | None
+    median_score: float
+    p25_score: float
+    accepted_count: int
+    sampled_count: int
+    median_shift_px: float
 
 
 def default_batch_name() -> str:
@@ -221,11 +256,288 @@ def sample_edge_points(mask: np.ndarray, side: str, margin: int) -> np.ndarray:
     return points_array
 
 
+def sample_background_gray(gray: np.ndarray, border_px: int = 80, inset_fraction: float = 0.05) -> float:
+    inset_y = int(round(gray.shape[0] * inset_fraction))
+    inset_x = int(round(gray.shape[1] * inset_fraction))
+    inner = gray[inset_y : gray.shape[0] - inset_y, inset_x : gray.shape[1] - inset_x]
+    if inner.size == 0:
+        inner = gray
+    border_px = max(1, min(border_px, inner.shape[0] // 3, inner.shape[1] // 3))
+    border = np.concatenate(
+        [
+            inner[:border_px, :].reshape(-1),
+            inner[-border_px:, :].reshape(-1),
+            inner[:, :border_px].reshape(-1),
+            inner[:, -border_px:].reshape(-1),
+        ]
+    )
+    return float(np.median(border))
+
+
+def sample_background_bgr(image_bgr: np.ndarray, border_px: int = 80, inset_fraction: float = 0.05) -> np.ndarray:
+    inset_y = int(round(image_bgr.shape[0] * inset_fraction))
+    inset_x = int(round(image_bgr.shape[1] * inset_fraction))
+    inner = image_bgr[inset_y : image_bgr.shape[0] - inset_y, inset_x : image_bgr.shape[1] - inset_x]
+    if inner.size == 0:
+        inner = image_bgr
+    border_px = max(1, min(border_px, inner.shape[0] // 3, inner.shape[1] // 3))
+    border = np.concatenate(
+        [
+            inner[:border_px, :, :].reshape(-1, 3),
+            inner[-border_px:, :, :].reshape(-1, 3),
+            inner[:, :border_px, :].reshape(-1, 3),
+            inner[:, -border_px:, :].reshape(-1, 3),
+        ],
+        axis=0,
+    )
+    return np.median(border, axis=0).astype(np.float32)
+
+
+def remove_edge_connected_components(mask: np.ndarray) -> np.ndarray:
+    count, labels = cv2.connectedComponents(mask, connectivity=8)
+    if count <= 1:
+        return mask
+
+    edge_labels = set(labels[0, :])
+    edge_labels.update(labels[-1, :])
+    edge_labels.update(labels[:, 0])
+    edge_labels.update(labels[:, -1])
+    cleaned = mask.copy()
+    for label in edge_labels:
+        if label:
+            cleaned[labels == label] = 0
+    return cleaned
+
+
+def build_foreground_mask(gray: np.ndarray, threshold: int, foreground_polarity: str) -> np.ndarray:
+    if foreground_polarity == "dark-foreground":
+        threshold_type = cv2.THRESH_BINARY_INV
+        threshold = DEFAULT_LIGHT_BACKGROUND_THRESHOLD
+    else:
+        threshold_type = cv2.THRESH_BINARY
+    _ret, mask = cv2.threshold(gray, threshold, 255, threshold_type)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    if foreground_polarity == "dark-foreground":
+        mask = remove_edge_connected_components(mask)
+    return mask
+
+
+def classify_candidate(width: int, height: int, area: float, image_area: int) -> str | None:
+    aspect = max(width / height, height / width)
+    short_side = min(width, height)
+    area_fraction = area / max(image_area, 1)
+
+    if aspect <= DEFAULT_PHOTO_MAX_ASPECT and area_fraction <= DEFAULT_PHOTO_MAX_AREA_FRACTION:
+        return "photo"
+    if (
+        aspect <= DEFAULT_DOCUMENT_MAX_ASPECT
+        and area_fraction <= DEFAULT_DOCUMENT_MAX_AREA_FRACTION
+        and short_side >= DEFAULT_DOCUMENT_MIN_SHORT_SIDE
+    ):
+        return "document"
+    return None
+
+
+def bbox_iou(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> float:
+    ax, ay, aw, ah = first
+    bx, by, bw, bh = second
+    ax2, ay2 = ax + aw, ay + ah
+    bx2, by2 = bx + bw, by + bh
+    ix1, iy1 = max(ax, bx), max(ay, by)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    intersection = (ix2 - ix1) * (iy2 - iy1)
+    union = aw * ah + bw * bh - intersection
+    return intersection / union if union else 0.0
+
+
+def dedupe_candidates(candidates: list[dict]) -> list[dict]:
+    kept: list[dict] = []
+    for candidate in sorted(candidates, key=lambda item: item["area"], reverse=True):
+        if any(bbox_iou(candidate["bbox"], existing["bbox"]) > 0.85 for existing in kept):
+            continue
+        kept.append(candidate)
+    return kept
+
+
+def side_position(quad: np.ndarray, side: str, coordinate: float) -> float:
+    tl, tr, br, bl = quad
+    if side == "top":
+        start, end = tl, tr
+        axis = 0
+    elif side == "bottom":
+        start, end = bl, br
+        axis = 0
+    elif side == "left":
+        start, end = tl, bl
+        axis = 1
+    else:
+        start, end = tr, br
+        axis = 1
+
+    delta = float(end[axis] - start[axis])
+    if abs(delta) < 1e-6:
+        return float((start[1 - axis] + end[1 - axis]) / 2)
+    t = (coordinate - float(start[axis])) / delta
+    return float(start[1 - axis] + t * (end[1 - axis] - start[1 - axis]))
+
+
+def side_range(quad: np.ndarray, side: str, margin: int) -> tuple[int, int]:
+    tl, tr, br, bl = quad
+    if side in {"top", "bottom"}:
+        values = (tl[0], tr[0]) if side == "top" else (bl[0], br[0])
+    else:
+        values = (tl[1], bl[1]) if side == "left" else (tr[1], br[1])
+    low = math.ceil(min(values)) + margin
+    high = math.floor(max(values)) - margin
+    return low, high
+
+
+def fit_transition_side(
+    local_gray: np.ndarray,
+    local_quad: np.ndarray,
+    side: str,
+    *,
+    polarity: str,
+) -> TransitionSide:
+    height, width = local_gray.shape
+    margin = max(8, DEFAULT_TRANSITION_OUTSIDE_RADIUS // 2)
+    low, high = side_range(local_quad, side, margin)
+    axis_limit = width if side in {"top", "bottom"} else height
+    low = max(margin, low)
+    high = min(axis_limit - margin - 1, high)
+    if high <= low:
+        return TransitionSide(np.empty((0, 2), dtype=np.float32), None, 0.0, 0.0, 0, 0, 0.0)
+
+    scan_values = list(range(low, high + 1, max(1, DEFAULT_TRANSITION_STEP_PX)))
+    points: list[tuple[float, float]] = []
+    scores: list[float] = []
+    shifts: list[float] = []
+    dark_foreground = polarity == "dark-foreground"
+
+    for coordinate in scan_values:
+        expected = side_position(local_quad, side, float(coordinate))
+        start = int(round(expected - DEFAULT_TRANSITION_OUTSIDE_RADIUS))
+        stop = int(round(expected + DEFAULT_TRANSITION_INSIDE_RADIUS))
+        if side in {"bottom", "right"}:
+            start = int(round(expected - DEFAULT_TRANSITION_INSIDE_RADIUS))
+            stop = int(round(expected + DEFAULT_TRANSITION_OUTSIDE_RADIUS))
+
+        if side in {"top", "bottom"}:
+            start = max(DEFAULT_TRANSITION_SAMPLE_GAP_PX, start)
+            stop = min(height - DEFAULT_TRANSITION_SAMPLE_GAP_PX - 1, stop)
+            if stop <= start:
+                continue
+            profile = local_gray[:, coordinate].astype(np.float32)
+        else:
+            start = max(DEFAULT_TRANSITION_SAMPLE_GAP_PX, start)
+            stop = min(width - DEFAULT_TRANSITION_SAMPLE_GAP_PX - 1, stop)
+            if stop <= start:
+                continue
+            profile = local_gray[coordinate, :].astype(np.float32)
+
+        profile = cv2.GaussianBlur(profile.reshape(-1, 1), (1, 9), 0).reshape(-1)
+        best_score = -1.0
+        best_pos: int | None = None
+        for pos in range(start, stop + 1):
+            before_pos = pos - DEFAULT_TRANSITION_SAMPLE_GAP_PX
+            after_pos = pos + DEFAULT_TRANSITION_SAMPLE_GAP_PX
+            if side in {"bottom", "right"}:
+                outside_value = profile[after_pos]
+                inside_value = profile[before_pos]
+            else:
+                outside_value = profile[before_pos]
+                inside_value = profile[after_pos]
+            score = (outside_value - inside_value) if dark_foreground else (inside_value - outside_value)
+            if score > best_score:
+                best_score = float(score)
+                best_pos = pos
+
+        if best_pos is None or best_score < DEFAULT_TRANSITION_MIN_SCORE:
+            continue
+        shift = float(best_pos - expected)
+        if abs(shift) > DEFAULT_TRANSITION_MAX_SHIFT_PX:
+            continue
+        point = (float(coordinate), float(best_pos)) if side in {"top", "bottom"} else (float(best_pos), float(coordinate))
+        points.append(point)
+        scores.append(best_score)
+        shifts.append(shift)
+
+    if not points:
+        return TransitionSide(np.empty((0, 2), dtype=np.float32), None, 0.0, 0.0, 0, len(scan_values), 0.0)
+
+    points_array = np.array(points, dtype=np.float32)
+    score_array = np.array(scores, dtype=np.float32)
+    shift_array = np.array(shifts, dtype=np.float32)
+
+    median_shift = float(np.median(shift_array))
+    shift_mad = float(np.median(np.abs(shift_array - median_shift)))
+    shift_limit = max(4.0, min(16.0, 2.5 * shift_mad + 3.0))
+    keep = np.abs(shift_array - median_shift) <= shift_limit
+    points_array = points_array[keep]
+    score_array = score_array[keep]
+    shift_array = shift_array[keep]
+
+    line = line_from_points(points_array)
+    median_score = float(np.median(score_array)) if score_array.size else 0.0
+    p25_score = float(np.quantile(score_array, 0.25)) if score_array.size else 0.0
+    median_shift = float(np.median(shift_array)) if shift_array.size else 0.0
+    return TransitionSide(
+        points=points_array,
+        line=line,
+        median_score=median_score,
+        p25_score=p25_score,
+        accepted_count=len(points_array),
+        sampled_count=len(scan_values),
+        median_shift_px=median_shift,
+    )
+
+
 def refine_quad_with_outer_edges(
     gray: np.ndarray,
     rough_quad: np.ndarray,
     threshold: int,
     padding: int,
+    *,
+    background_gray: float | None = None,
+    foreground_polarity: str | None = None,
+) -> tuple[np.ndarray, dict]:
+    background_gray = sample_background_gray(gray) if background_gray is None else float(background_gray)
+    foreground_polarity = foreground_polarity or ("dark-foreground" if background_gray >= 128.0 else "light-foreground")
+    if background_gray >= DEFAULT_TRANSITION_LIGHT_BACKGROUND_MIN and foreground_polarity == "dark-foreground":
+        quad, debug = refine_quad_with_transition_edges(gray, rough_quad, threshold, padding, background_gray)
+        if debug.get("transition_refined"):
+            return quad, debug
+        fallback_quad, fallback_debug = refine_quad_with_background_edges(
+            gray,
+            rough_quad,
+            threshold,
+            padding,
+            background_gray=background_gray,
+            foreground_polarity=foreground_polarity,
+        )
+        return fallback_quad, {**fallback_debug, **debug}
+    return refine_quad_with_background_edges(
+        gray,
+        rough_quad,
+        threshold,
+        padding,
+        background_gray=background_gray,
+        foreground_polarity=foreground_polarity,
+    )
+
+
+def refine_quad_with_background_edges(
+    gray: np.ndarray,
+    rough_quad: np.ndarray,
+    threshold: int,
+    padding: int,
+    *,
+    background_gray: float,
+    foreground_polarity: str,
 ) -> tuple[np.ndarray, dict]:
     x, y, w, h = cv2.boundingRect(rough_quad.astype(np.int32))
     x0 = max(0, x - padding)
@@ -234,7 +546,12 @@ def refine_quad_with_outer_edges(
     y1 = min(gray.shape[0], y + h + padding)
 
     local_gray = gray[y0:y1, x0:x1]
-    _ret, local_mask = cv2.threshold(local_gray, threshold, 255, cv2.THRESH_BINARY)
+    if foreground_polarity == "dark-foreground":
+        local_threshold = int(round(max(0, min(255, background_gray - DEFAULT_BACKGROUND_CONTRAST_DELTA))))
+        _ret, local_mask = cv2.threshold(local_gray, local_threshold, 255, cv2.THRESH_BINARY_INV)
+    else:
+        local_threshold = int(round(max(threshold, min(255, background_gray + DEFAULT_BACKGROUND_CONTRAST_DELTA))))
+        _ret, local_mask = cv2.threshold(local_gray, local_threshold, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     local_mask = cv2.morphologyEx(local_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     local_mask = cv2.morphologyEx(local_mask, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -247,7 +564,14 @@ def refine_quad_with_outer_edges(
     lines = {side: line_from_points(points) for side, points in edge_points.items()}
 
     if any(lines[side] is None for side in ("top", "right", "bottom", "left")):
-        return rough_quad, {"refined": False, "reason": "insufficient edge points"}
+        return rough_quad, {
+            "refined": False,
+            "reason": "insufficient background-aware edge points",
+            "polarity": foreground_polarity,
+            "background_gray": background_gray,
+            "local_threshold": local_threshold,
+            "edge_point_counts": {side: len(points) for side, points in edge_points.items()},
+        }
 
     local_corners = [
         intersect_lines(lines["top"], lines["left"]),
@@ -256,52 +580,161 @@ def refine_quad_with_outer_edges(
         intersect_lines(lines["bottom"], lines["left"]),
     ]
     if any(corner is None for corner in local_corners):
-        return rough_quad, {"refined": False, "reason": "parallel edge lines"}
+        return rough_quad, {
+            "refined": False,
+            "reason": "parallel background-aware edge lines",
+            "polarity": foreground_polarity,
+            "background_gray": background_gray,
+            "local_threshold": local_threshold,
+        }
 
     local_quad = order_points(np.array(local_corners, dtype=np.float32))
     global_quad = local_quad + np.array([x0, y0], dtype=np.float32)
 
     rough_area = cv2.contourArea(rough_quad.astype(np.float32))
     refined_area = cv2.contourArea(global_quad.astype(np.float32))
-    if refined_area < rough_area * 0.85 or refined_area > rough_area * 1.2:
-        return rough_quad, {"refined": False, "reason": "area sanity check failed"}
+    if refined_area < rough_area * 0.75 or refined_area > rough_area * 1.25:
+        return rough_quad, {
+            "refined": False,
+            "reason": "background-aware area sanity check failed",
+            "polarity": foreground_polarity,
+            "background_gray": background_gray,
+            "local_threshold": local_threshold,
+            "rough_area": rough_area,
+            "refined_area": refined_area,
+        }
 
     debug = {
         "refined": True,
         "local_origin": (x0, y0),
+        "polarity": foreground_polarity,
+        "background_gray": background_gray,
+        "local_threshold": local_threshold,
         "edge_point_counts": {side: len(points) for side, points in edge_points.items()},
     }
     return global_quad, debug
 
 
+def refine_quad_with_transition_edges(
+    gray: np.ndarray,
+    rough_quad: np.ndarray,
+    threshold: int,
+    padding: int,
+    background_gray: float,
+) -> tuple[np.ndarray, dict]:
+    x, y, w, h = cv2.boundingRect(rough_quad.astype(np.int32))
+    x0 = max(0, x - padding)
+    y0 = max(0, y - padding)
+    x1 = min(gray.shape[1], x + w + padding)
+    y1 = min(gray.shape[0], y + h + padding)
+    local_gray = gray[y0:y1, x0:x1]
+    local_quad = rough_quad.astype(np.float32) - np.array([x0, y0], dtype=np.float32)
+
+    sides = {
+        side: fit_transition_side(local_gray, local_quad, side, polarity="dark-foreground")
+        for side in SIDES
+    }
+    debug_base = {
+        "transition_refined": False,
+        "transition_background_gray": background_gray,
+        "transition_side_counts": {side: sides[side].accepted_count for side in SIDES},
+        "transition_side_scores": {side: round(sides[side].median_score, 3) for side in SIDES},
+        "transition_side_shifts": {side: round(sides[side].median_shift_px, 3) for side in SIDES},
+    }
+    missing = [side for side, info in sides.items() if info.line is None or info.accepted_count < DEFAULT_TRANSITION_MIN_POINTS]
+    if missing:
+        return rough_quad, {
+            **debug_base,
+            "refined": False,
+            "reason": f"insufficient transition points: {','.join(missing)}",
+            "transition_reason": f"insufficient transition points: {','.join(missing)}",
+        }
+
+    local_corners = [
+        intersect_lines(sides["top"].line, sides["left"].line),
+        intersect_lines(sides["top"].line, sides["right"].line),
+        intersect_lines(sides["bottom"].line, sides["right"].line),
+        intersect_lines(sides["bottom"].line, sides["left"].line),
+    ]
+    if any(corner is None for corner in local_corners):
+        return rough_quad, {
+            **debug_base,
+            "refined": False,
+            "reason": "parallel transition lines",
+            "transition_reason": "parallel transition lines",
+        }
+
+    local_quad_refined = order_points(np.array(local_corners, dtype=np.float32))
+    global_quad = local_quad_refined + np.array([x0, y0], dtype=np.float32)
+    rough_area = cv2.contourArea(rough_quad.astype(np.float32))
+    refined_area = cv2.contourArea(global_quad.astype(np.float32))
+    if refined_area < rough_area * DEFAULT_TRANSITION_MIN_AREA_RATIO or refined_area > rough_area * DEFAULT_TRANSITION_MAX_AREA_RATIO:
+        return rough_quad, {
+            **debug_base,
+            "refined": False,
+            "reason": "transition area sanity check failed",
+            "transition_reason": "transition area sanity check failed",
+            "transition_rough_area": rough_area,
+            "transition_refined_area": refined_area,
+        }
+
+    return global_quad, {
+        **debug_base,
+        "refined": True,
+        "transition_refined": True,
+        "transition_reason": "",
+        "transition_rough_area": rough_area,
+        "transition_refined_area": refined_area,
+        "local_origin": (x0, y0),
+    }
+
+
 def rough_candidates(image_bgr: np.ndarray, threshold: int, min_area: int) -> list[dict]:
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    _ret, mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-
-    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     image_area = image_bgr.shape[0] * image_bgr.shape[1]
+    background_gray = sample_background_gray(gray)
+    background_bgr = sample_background_bgr(image_bgr)
+    background_is_light = background_gray >= 128.0
+    polarities = ("dark-foreground",) if background_is_light else ("light-foreground",)
     candidates = []
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < min_area or area > image_area * 0.2:
-            continue
+    for foreground_polarity in polarities:
+        mask = build_foreground_mask(gray, threshold, foreground_polarity)
+        contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < min_area:
+                continue
 
-        x, y, w, h = cv2.boundingRect(contour)
-        touches_scan_edge = x <= 5 or y <= 5 or x + w >= image_bgr.shape[1] - 5 or y + h >= image_bgr.shape[0] - 5
-        if touches_scan_edge or w < 250 or h < 250:
-            continue
+            x, y, w, h = cv2.boundingRect(contour)
+            touches_scan_edge = (
+                x <= DEFAULT_EDGE_MARGIN
+                or y <= DEFAULT_EDGE_MARGIN
+                or x + w >= image_bgr.shape[1] - DEFAULT_EDGE_MARGIN
+                or y + h >= image_bgr.shape[0] - DEFAULT_EDGE_MARGIN
+            )
+            if touches_scan_edge or w < DEFAULT_MIN_SIZE or h < DEFAULT_MIN_SIZE:
+                continue
 
-        rough_quad = find_quadrilateral(contour)
-        width, height = rectified_size(rough_quad)
-        aspect = max(width / height, height / width)
-        if aspect > 2.0:
-            continue
+            rough_quad = find_quadrilateral(contour)
+            width, height = rectified_size(rough_quad)
+            candidate_type = classify_candidate(width, height, area, image_area)
+            if candidate_type is None:
+                continue
 
-        candidates.append({"bbox": (x, y, w, h), "area": area, "rough_quad": rough_quad})
+            candidates.append(
+                {
+                    "bbox": (x, y, w, h),
+                    "area": area,
+                    "rough_quad": rough_quad,
+                    "candidate_type": candidate_type,
+                    "foreground_polarity": foreground_polarity,
+                    "background_gray": background_gray,
+                    "background_bgr": background_bgr,
+                    "background_is_light": background_is_light,
+                }
+            )
 
+    candidates = dedupe_candidates(candidates)
     candidates.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
     return candidates
 
@@ -662,6 +1095,38 @@ def contiguous_dark_trim(fractions: list[float], dark_fraction: float) -> int:
     return trim
 
 
+def edge_background_fractions(
+    image_bgr: np.ndarray,
+    background_bgr: np.ndarray,
+    side: str,
+    limit: int,
+    color_distance: float,
+) -> list[float]:
+    fractions = []
+    background = background_bgr.reshape(1, 1, 3).astype(np.float32)
+    for offset in range(limit):
+        if side == "top":
+            values = image_bgr[offset : offset + 1, :, :]
+        elif side == "bottom":
+            values = image_bgr[image_bgr.shape[0] - 1 - offset : image_bgr.shape[0] - offset, :, :]
+        elif side == "left":
+            values = image_bgr[:, offset : offset + 1, :]
+        else:
+            values = image_bgr[:, image_bgr.shape[1] - 1 - offset : image_bgr.shape[1] - offset, :]
+        distances = np.linalg.norm(values.astype(np.float32) - background, axis=2)
+        fractions.append(float(np.mean(distances <= color_distance)))
+    return fractions
+
+
+def contiguous_background_trim(fractions: list[float], background_fraction: float) -> int:
+    trim = 0
+    for fraction in fractions:
+        if fraction < background_fraction:
+            break
+        trim += 1
+    return trim
+
+
 def trim_dark_edges(
     image_bgr: np.ndarray,
     dark_threshold: int,
@@ -669,10 +1134,64 @@ def trim_dark_edges(
     max_trim_px: int,
     max_trim_fraction: float,
     edge_ratio_band: int,
+    *,
+    background_bgr: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
     height, width = image_bgr.shape[:2]
-    max_trim = max(0, min(max_trim_px, int(round(min(width, height) * max_trim_fraction))))
     before_ratio = dark_edge_ratio(image_bgr, dark_threshold, edge_ratio_band)
+    if background_bgr is not None:
+        max_trim = max(
+            0,
+            min(
+                DEFAULT_BACKGROUND_MAX_TRIM_PX,
+                int(round(min(width, height) * DEFAULT_BACKGROUND_MAX_TRIM_FRACTION)),
+            ),
+        )
+        if max_trim == 0 or width <= 2 or height <= 2:
+            return image_bgr, {
+                "trim_left": 0,
+                "trim_top": 0,
+                "trim_right": 0,
+                "trim_bottom": 0,
+                "dark_edge_ratio_before": before_ratio,
+                "dark_edge_ratio_after": before_ratio,
+            }
+
+        background_bgr = np.asarray(background_bgr, dtype=np.float32)
+        top = contiguous_background_trim(
+            edge_background_fractions(image_bgr, background_bgr, "top", max_trim, DEFAULT_BACKGROUND_COLOR_DISTANCE),
+            DEFAULT_BACKGROUND_TRIM_FRACTION,
+        )
+        bottom = contiguous_background_trim(
+            edge_background_fractions(image_bgr, background_bgr, "bottom", max_trim, DEFAULT_BACKGROUND_COLOR_DISTANCE),
+            DEFAULT_BACKGROUND_TRIM_FRACTION,
+        )
+        left = contiguous_background_trim(
+            edge_background_fractions(image_bgr, background_bgr, "left", max_trim, DEFAULT_BACKGROUND_COLOR_DISTANCE),
+            DEFAULT_BACKGROUND_TRIM_FRACTION,
+        )
+        right = contiguous_background_trim(
+            edge_background_fractions(image_bgr, background_bgr, "right", max_trim, DEFAULT_BACKGROUND_COLOR_DISTANCE),
+            DEFAULT_BACKGROUND_TRIM_FRACTION,
+        )
+
+        if top + bottom >= height:
+            top = bottom = 0
+        if left + right >= width:
+            left = right = 0
+
+        trimmed = image_bgr[top : height - bottom, left : width - right]
+        after_ratio = dark_edge_ratio(trimmed, dark_threshold, edge_ratio_band)
+        return trimmed, {
+            "trim_left": left,
+            "trim_top": top,
+            "trim_right": right,
+            "trim_bottom": bottom,
+            "dark_edge_ratio_before": before_ratio,
+            "dark_edge_ratio_after": after_ratio,
+        }
+
+    max_trim = max(0, min(max_trim_px, int(round(min(width, height) * max_trim_fraction))))
     if max_trim == 0 or width <= 2 or height <= 2:
         return image_bgr, {
             "trim_left": 0,
@@ -763,7 +1282,14 @@ def process_scan(
     oriented_paths = []
     orientation_elapsed_ms = 0.0
     for index, candidate in enumerate(candidates, start=1):
-        quad, debug = refine_quad_with_outer_edges(gray, candidate["rough_quad"], threshold, padding)
+        quad, debug = refine_quad_with_outer_edges(
+            gray,
+            candidate["rough_quad"],
+            threshold,
+            padding,
+            background_gray=candidate.get("background_gray"),
+            foreground_polarity=candidate.get("foreground_polarity"),
+        )
         width, height = rectified_size(quad)
         destination = np.array(
             [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
@@ -784,6 +1310,7 @@ def process_scan(
             max_trim_px,
             max_trim_fraction,
             edge_ratio_band,
+            background_bgr=candidate.get("background_bgr"),
         )
 
         filename = f"{source_stem}_{index:02d}.png"

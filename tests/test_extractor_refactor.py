@@ -71,6 +71,7 @@ except ModuleNotFoundError:
 
 from extractor.batch import run_batch
 from extractor import ScanResult, process_scan, write_metadata
+from extractor.core import rough_candidates
 
 
 def metadata_detection(filename: str) -> dict:
@@ -184,6 +185,19 @@ class ExtractorRefactorTests(unittest.TestCase):
             with metadata_path.open(newline="") as handle:
                 rows = list(csv.reader(handle))
             self.assertEqual(len(rows), len(detections) + 1)
+
+    def test_rough_candidates_supports_dark_document_on_light_background(self) -> None:
+        import cv2
+        import numpy as np
+
+        image = np.full((1400, 1400, 3), 245, dtype=np.uint8)
+        cv2.rectangle(image, (300, 200), (850, 1150), (20, 20, 20), thickness=-1)
+
+        candidates = rough_candidates(image, threshold=90, min_area=45_000)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["foreground_polarity"], "dark-foreground")
+        self.assertEqual(candidates[0]["candidate_type"], "document")
 
 
 if __name__ == "__main__":

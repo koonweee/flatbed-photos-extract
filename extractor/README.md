@@ -1,7 +1,8 @@
 # Extractor
 
-The extractor crops each detected photo to its paper border, straightens it,
-trims dark edge residue, and applies automatic orientation correction.
+The extractor crops each detected photo or document-like item to its border,
+straightens it, trims scanner-background residue, and applies automatic
+orientation correction.
 
 The bundled YuNet face detector lives in `extractor/models/`. The GyroScope
 orientation model is loaded through Hugging Face Transformers on first use.
@@ -51,10 +52,12 @@ original -> mask -> outline -> before orientation -> final
 
 ## Pipeline
 
-1. Threshold the scan to separate photo paper from the dark background.
-2. Find paper-like connected components.
-3. Fit and refine each photo's outer border.
-4. Perspective-warp each photo to a rectangle.
-5. Trim remaining dark scanner edges.
-6. Rotate using YuNet face detection or GyroScope fallback.
-7. Write photos, metadata, and optional debug PNGs.
+1. Sample the scan border to infer the high-contrast background polarity.
+2. Threshold the scan to separate foreground items from the background.
+3. Find photo-like and document-like connected components.
+4. Fit and refine each item's outer border, using shadow-tolerant edge
+   transitions for dark items on light backgrounds.
+5. Perspective-warp each item to a rectangle.
+6. Trim remaining scanner-background-colored edges.
+7. Rotate using YuNet face detection or GyroScope fallback.
+8. Write photos, metadata, and optional debug PNGs.
