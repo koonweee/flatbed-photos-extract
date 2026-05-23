@@ -160,7 +160,8 @@ def test_completed_list_links_to_detail_with_debug_enabled(monkeypatch, tmp_path
     assert "scan-b-02.png" in detail.text
     assert "Debug" in detail.text
     assert "001-scan-a_debug.png" in detail.text
-    assert "/download/metadata" in detail.text
+    assert "Metadata CSV" not in detail.text
+    assert "/download/metadata" not in detail.text
     assert "/download/photos.zip" in detail.text
     assert input_media.status_code == 200
     assert input_media.content == PNG_BYTES

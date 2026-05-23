@@ -73,6 +73,8 @@ def test_correct_password_creates_usable_session(tmp_path):
     assert "session=" in login.headers["set-cookie"]
     assert upload.status_code == 200
     assert "Upload scans" in upload.text
+    assert "Log out" in upload.text
+    assert 'action="/logout"' in upload.text
     assert active.status_code == 200
     assert "Active jobs" in active.text
     assert completed.status_code == 200
@@ -142,6 +144,8 @@ def test_passwordless_app_skips_login(tmp_path):
 
     assert response.status_code == 200
     assert "Upload scans" in response.text
+    assert "Log out" not in response.text
+    assert 'action="/logout"' not in response.text
 
 
 def test_settings_loads_dotenv_without_overriding_environment(monkeypatch, tmp_path):

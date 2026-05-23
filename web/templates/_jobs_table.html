@@ -1,5 +1,6 @@
 <div
   id="jobs-panel"
+  class="job-collection job-collection-{{ job_mode }}"
   {% if auto_refresh %}
   hx-get="/active/fragment"
   hx-trigger="every 1.5s"
@@ -11,95 +12,147 @@
   <div class="error" role="alert">{{ notice }}</div>
   {% endif %}
   {% if jobs %}
-  <table>
-    <thead>
-      <tr>
-        <th scope="col">Job</th>
-        <th scope="col">Status</th>
-        <th scope="col">Progress</th>
-        <th scope="col">ETA</th>
-        <th scope="col">Created</th>
-        <th scope="col">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for job in jobs %}
-      <tr
-        {% if job["status"] == "completed" %}
-        class="clickable-row"
-        data-href="/jobs/{{ job["id"] }}"
-        tabindex="0"
-        aria-label="Open {{ job["title"] }}"
-        {% endif %}
-      >
-        <td data-label="Job">
-          {% if job["status"] == "completed" %}
-          <a class="job-title-link" href="/jobs/{{ job["id"] }}"><strong>{{ job["title"] }}</strong></a>
+  {% if job_mode == "active" %}
+  <div class="job-summary" aria-label="Active job summary">
+    {% for status, count in status_counts.items() %}
+    <span class="summary-chip summary-{{ status }}">{{ status|capitalize }} <strong>{{ count }}</strong></span>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <div class="job-list" role="list">
+    {% for job in jobs %}
+    <article
+      class="job-card job-card-{{ job_mode }}{% if job_mode == 'completed' and job['status'] == 'completed' %} clickable-row{% endif %}"
+      role="listitem"
+      {% if job_mode == "completed" and job["status"] == "completed" %}
+      data-href="/jobs/{{ job["id"] }}"
+      tabindex="0"
+      aria-label="Open {{ job["title_display"] }}"
+      {% endif %}
+    >
+      <div class="job-main">
+        <div class="job-title-line">
+          {% if job_mode == "completed" and job["status"] == "completed" %}
+          <a class="job-title-link truncate" href="/jobs/{{ job["id"] }}" title="{{ job["title_display"] }}"><strong>{{ job["title_display"] }}</strong></a>
           {% else %}
-          <strong>{{ job["title"] }}</strong>
+          <strong class="truncate" title="{{ job["title_display"] }}">{{ job["title_display"] }}</strong>
           {% endif %}
-          {% if job["error_message"] %}
-          <div class="error-inline">{{ job["error_message"] }}</div>
+          {% if job_mode == "completed" %}
+          <span class="status status-{{ job["status"] }}">{{ job["status"] }}</span>
           {% endif %}
-          {% if job["files"] %}
-          <ol class="file-statuses">
-            {% for file in job["files"] %}
-            <li>
-              <span>{{ file["path"].split("/")[-1] }}</span>
-              <span class="status status-{{ file["status"] }}">{{ file["status"] }}</span>
-              {% if file["error_message"] %}
-              <span class="error-inline">{{ file["error_message"] }}</span>
-              {% endif %}
-            </li>
-            {% endfor %}
-          </ol>
-          {% endif %}
-        </td>
-        <td data-label="Status"><span class="status status-{{ job["status"] }}">{{ job["status"] }}</span></td>
-        <td data-label="Progress">
+        </div>
+        {% if job["error_message"] %}
+        <div class="error-inline">{{ job["error_message"] }}</div>
+        {% endif %}
+        {% if job_mode == "active" and job["files"] %}
+        <div class="muted job-file-count">{{ job["total_files"] or 0 }} inputs</div>
+        <div hidden>
+          {% for file in job["files"] %}
+          <button
+            type="button"
+            data-gallery-item
+            data-gallery-src="{{ file["url"] }}"
+            data-gallery-name="{{ file["name"] }}"
+            data-gallery-group="{{ job["title_display"] }} inputs"
+            data-gallery-key="job-{{ job["id"] }}-inputs"
+            title="{{ file["name"] }}"
+          ></button>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+
+      {% if job_mode == "active" %}
+      <div class="job-status-cell">
+        <span class="status status-{{ job["status"] }}">{{ job["status"] }}</span>
+      </div>
+      <div class="job-meta">
+        <div>
+          <span class="meta-label">Progress</span>
           <div class="progress" aria-label="{{ job["progress_label"] }} scans completed">
             <span style="width: {{ job["progress_percent"] }}%"></span>
           </div>
           <span class="muted">{{ job["progress_label"] }}</span>
-        </td>
-        <td data-label="ETA">{% if job["eta"] %}{{ job["eta"] }}{% else %}<span class="muted">-</span>{% endif %}</td>
-        <td data-label="Created">{{ job["created_at"] }}</td>
-        <td data-label="Actions">
-          <div class="actions">
-            {% if job["status"] in ["queued", "running"] %}
-            <form
-              method="post"
-              action="/jobs/{{ job["id"] }}/abort"
-              hx-post="/jobs/{{ job["id"] }}/abort"
-              hx-target="#jobs-panel"
-              hx-swap="outerHTML"
-              hx-confirm="Abort this job?"
-            >
-              <button class="danger" type="submit">Abort</button>
-            </form>
-            {% elif job["status"] == "cancelling" %}
-            <button type="button" disabled>Aborting</button>
-            {% elif job["status"] in ["completed", "failed", "cancelled"] %}
-            <form
-              method="post"
-              action="/jobs/{{ job["id"] }}/delete"
-              hx-post="/jobs/{{ job["id"] }}/delete"
-              hx-target="#jobs-panel"
-              hx-swap="outerHTML"
-              hx-confirm="Delete this job and its files?"
-            >
-              <button class="danger" type="submit">Delete</button>
-            </form>
-            {% else %}
-            <span class="muted">-</span>
-            {% endif %}
-          </div>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+        </div>
+        <div>
+          <span class="meta-label">ETA</span>
+          {% if job["eta"] %}{{ job["eta"] }}{% else %}<span class="muted">-</span>{% endif %}
+        </div>
+        <div>
+          <span class="meta-label">Created</span>
+          {{ job["created_at_display"] }}
+        </div>
+      </div>
+      <div class="actions job-actions">
+        {% if job["files"] %}
+        <button class="action-icon" type="button" data-gallery-open-key="job-{{ job["id"] }}-inputs" aria-label="View inputs" title="View inputs">
+          <i data-lucide="images" aria-hidden="true"></i>
+        </button>
+        {% endif %}
+        {% if job["status"] in ["queued", "running"] %}
+        <form
+          method="post"
+          action="/jobs/{{ job["id"] }}/abort"
+          hx-post="/jobs/{{ job["id"] }}/abort"
+          hx-target="#jobs-panel"
+          hx-swap="outerHTML"
+          hx-confirm="Abort this job?"
+        >
+          <button class="action-icon danger" type="submit" aria-label="Abort" title="Abort">
+            <i data-lucide="circle-stop" aria-hidden="true"></i>
+          </button>
+        </form>
+        {% elif job["status"] == "cancelling" %}
+        <button class="action-icon" type="button" disabled aria-label="Aborting" title="Aborting">
+          <i data-lucide="loader-circle" aria-hidden="true"></i>
+        </button>
+        {% endif %}
+      </div>
+      {% else %}
+      <div class="job-meta">
+        <div>
+          <span class="meta-label">Completed</span>
+          {% if job["completed_at_display"] %}{{ job["completed_at_display"] }}{% else %}<span class="muted">-</span>{% endif %}
+        </div>
+        <div>
+          <span class="meta-label">Photos</span>
+          {{ job["output_count"] }}
+        </div>
+      </div>
+      <div class="actions job-actions">
+        {% if job["status"] == "completed" %}
+        <a class="action-icon" href="/jobs/{{ job["id"] }}" aria-label="Open" title="Open">
+          <i data-lucide="external-link" aria-hidden="true"></i>
+        </a>
+        {% if job["zip_exists"] %}
+        <a class="action-icon" href="/jobs/{{ job["id"] }}/download/photos.zip" download aria-label="Download all" title="Download all">
+          <i data-lucide="download" aria-hidden="true"></i>
+        </a>
+        {% endif %}
+        {% endif %}
+        <form
+          method="post"
+          action="/jobs/{{ job["id"] }}/delete"
+          hx-post="/jobs/{{ job["id"] }}/delete"
+          hx-target="#jobs-panel"
+          hx-swap="outerHTML"
+          hx-confirm="Delete this job and its files?"
+        >
+          <button class="action-icon danger" type="submit" aria-label="Delete" title="Delete">
+            <i data-lucide="trash-2" aria-hidden="true"></i>
+          </button>
+        </form>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
   {% else %}
-  <p class="muted">{{ empty_message }}</p>
+  <div class="empty-state">
+    <p class="muted">{{ empty_message }}</p>
+    {% if job_mode == "active" %}
+    <a href="/completed">See completed jobs</a>
+    {% endif %}
+  </div>
   {% endif %}
 </div>

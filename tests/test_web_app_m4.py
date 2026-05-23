@@ -262,6 +262,9 @@ def test_scan_failure_marks_file_and_job_failed_with_message(monkeypatch, tmp_pa
     assert "simulated extraction failure" in job["error_message"]
     assert file_row["status"] == "failed"
     assert "simulated extraction failure" in response.text
+    assert "Download all" not in response.text
+    assert "/download/photos.zip" not in response.text
+    assert "Abort" not in response.text
 
 
 def test_eta_visible_for_running_and_pending_for_queued(monkeypatch, tmp_path):
@@ -307,3 +310,6 @@ def test_eta_visible_for_running_and_pending_for_queued(monkeypatch, tmp_path):
     assert "Calculating" in response.text
     assert "Queued ETA" in response.text
     assert "Pending" in response.text
+    assert "Progress" in response.text
+    assert "Abort" in response.text
+    assert "Download all" not in response.text

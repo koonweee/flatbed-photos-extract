@@ -1,25 +1,37 @@
 {% extends "base.html" %}
 
 {% block title %}Upload - Flatbed Photos{% endblock %}
+{% block body_class %}upload-page{% endblock %}
 
 {% block content %}
-<section class="panel">
+<div class="page-drop-overlay" data-page-drop-overlay aria-hidden="true">
+  <div>Drop images to add them</div>
+</div>
+<div class="toast-stack" data-toast-stack aria-live="polite"></div>
+
+<section class="panel upload-panel">
   <h1>Upload scans</h1>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
   {% endif %}
   <form class="stack" method="post" action="/upload" enctype="multipart/form-data" data-upload-form>
-    <label for="title">Job title</label>
-    <input id="title" name="title" type="text" placeholder="Timestamp title when blank">
+    <div class="form-field">
+      <label for="title">Job title</label>
+      <input id="title" name="title" type="text" placeholder="Enter job title here (optional)">
+    </div>
 
     <label class="upload-drop" for="files">
-      <span>Choose scan images</span>
-      <span class="muted">JPG, PNG, TIFF, BMP, GIF, or WebP</span>
+      <span class="upload-drop-icon" aria-hidden="true">⇧</span>
+      <span>Drag images here or click to upload</span>
     </label>
-    <input id="files" name="files" type="file" accept="image/*,.tif,.tiff" multiple data-file-input>
+    <input class="sr-only" id="files" name="files" type="file" accept="image/*,.tif,.tiff" multiple data-file-input>
 
+    <div class="selected-files-heading" data-file-list-heading>
+      <strong data-file-count>0 files selected</strong>
+      <button class="secondary text-button" type="button" data-clear-files hidden>Clear all</button>
+    </div>
     <div class="selected-files" data-file-list aria-live="polite"></div>
-    <button type="submit">Create queued job</button>
+    <button type="submit">Create job</button>
   </form>
 </section>
 
@@ -27,7 +39,56 @@
   const form = document.querySelector("[data-upload-form]");
   const input = document.querySelector("[data-file-input]");
   const list = document.querySelector("[data-file-list]");
+  const listHeading = document.querySelector("[data-file-list-heading]");
+  const fileCount = document.querySelector("[data-file-count]");
+  const clearFiles = document.querySelector("[data-clear-files]");
+  const overlay = document.querySelector("[data-page-drop-overlay]");
+  const toastStack = document.querySelector("[data-toast-stack]");
   let selectedFiles = [];
+  let objectUrls = [];
+  let dragDepth = 0;
+  const validExtensions = [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"];
+
+  function isImageFile(file) {
+    const name = file.name.toLowerCase();
+    return file.type.startsWith("image/") || validExtensions.some((extension) => name.endsWith(extension));
+  }
+
+  function formatSize(bytes) {
+    if (bytes >= 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+
+  function showToast(message) {
+    const toast = document.createElement("div");
+    toast.className = "toast toast-error";
+    toast.role = "alert";
+    toast.textContent = message;
+    const close = document.createElement("button");
+    close.className = "secondary icon-button";
+    close.type = "button";
+    close.innerHTML = '<i data-lucide="x" aria-hidden="true"></i>';
+    close.ariaLabel = "Dismiss";
+    close.addEventListener("click", () => toast.remove());
+    toast.append(close);
+    toastStack.append(toast);
+    window.renderLucideIcons?.(toast);
+    window.setTimeout(() => toast.remove(), 5000);
+  }
+
+  function addFiles(files) {
+    const incoming = Array.from(files);
+    const valid = incoming.filter(isImageFile);
+    const invalidCount = incoming.length - valid.length;
+    if (invalidCount > 0) {
+      showToast(`${invalidCount} file${invalidCount === 1 ? "" : "s"} skipped: only images are supported.`);
+    }
+    selectedFiles = selectedFiles.concat(valid);
+    syncFileInput();
+    renderSelectedFiles();
+  }
 
   function syncFileInput() {
     const transfer = new DataTransfer();
@@ -35,45 +96,111 @@
     input.files = transfer.files;
   }
 
+  function clearObjectUrls() {
+    objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    objectUrls = [];
+  }
+
   function renderSelectedFiles() {
+    clearObjectUrls();
     list.replaceChildren();
+    fileCount.textContent = `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected`;
+    clearFiles.hidden = selectedFiles.length === 0;
     if (selectedFiles.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "muted";
-      empty.textContent = "No files selected.";
-      list.append(empty);
       return;
     }
+    listHeading.hidden = false;
 
     selectedFiles.forEach((file, index) => {
+      const objectUrl = URL.createObjectURL(file);
+      objectUrls.push(objectUrl);
       const row = document.createElement("div");
       row.className = "selected-file";
+      row.role = "button";
+      row.tabIndex = 0;
+      row.dataset.galleryItem = "";
+      row.dataset.gallerySrc = objectUrl;
+      row.dataset.galleryName = file.name;
+      row.dataset.galleryGroup = "Selected uploads";
+      row.title = file.name;
 
       const image = document.createElement("img");
       image.alt = "";
-      image.src = URL.createObjectURL(file);
-      image.onload = () => URL.revokeObjectURL(image.src);
+      image.src = row.dataset.gallerySrc;
 
+      const detail = document.createElement("span");
+      detail.className = "selected-file-detail";
       const name = document.createElement("span");
+      name.className = "truncate";
       name.textContent = file.name;
+      name.title = file.name;
+      const meta = document.createElement("span");
+      meta.className = "muted";
+      meta.textContent = formatSize(file.size);
+      detail.append(name, meta);
+
+      const status = document.createElement("span");
+      status.className = "file-ready";
+      status.innerHTML = '<i data-lucide="check" aria-hidden="true"></i><span>Ready</span>';
 
       const remove = document.createElement("button");
+      remove.className = "secondary icon-button";
       remove.type = "button";
-      remove.textContent = "Remove";
-      remove.addEventListener("click", () => {
+      remove.innerHTML = '<i data-lucide="x" aria-hidden="true"></i>';
+      remove.ariaLabel = `Remove ${file.name}`;
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
         selectedFiles.splice(index, 1);
         syncFileInput();
         renderSelectedFiles();
       });
 
-      row.append(image, name, remove);
+      row.append(image, detail, status, remove);
       list.append(row);
     });
+    window.renderLucideIcons?.(list);
   }
 
-  input.addEventListener("change", () => {
-    selectedFiles = Array.from(input.files);
+  clearFiles.addEventListener("click", () => {
+    selectedFiles = [];
+    syncFileInput();
     renderSelectedFiles();
+  });
+
+  input.addEventListener("change", () => {
+    addFiles(input.files);
+  });
+
+  document.addEventListener("dragenter", (event) => {
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types).includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepth += 1;
+    overlay.classList.add("is-visible");
+  });
+
+  document.addEventListener("dragover", (event) => {
+    if (event.dataTransfer) {
+      event.preventDefault();
+    }
+  });
+
+  document.addEventListener("dragleave", () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) {
+      overlay.classList.remove("is-visible");
+    }
+  });
+
+  document.addEventListener("drop", (event) => {
+    if (!event.dataTransfer) {
+      return;
+    }
+    event.preventDefault();
+    dragDepth = 0;
+    overlay.classList.remove("is-visible");
+    addFiles(event.dataTransfer.files);
   });
 
   form.addEventListener("submit", (event) => {
@@ -84,6 +211,7 @@
     if (selectedFiles.length === 0) {
       event.preventDefault();
       renderSelectedFiles();
+      showToast("Add at least one image before creating a job.");
     }
   });
 

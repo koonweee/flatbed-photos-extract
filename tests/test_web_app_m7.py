@@ -2,12 +2,14 @@ import asyncio
 import json
 import logging
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 
 from web import create_app
+from web.app import format_completion_duration, format_display_datetime, format_job_title
 from web.config import Settings, load_settings
 from web.database import create_job_with_files, init_db
 
@@ -195,11 +197,98 @@ def test_docker_packaging_includes_models_and_ignores_generated_artifacts():
 def test_responsive_css_covers_job_lists_uploads_and_galleries():
     css = Path("web/static/app.css").read_text()
     jobs_table = Path("web/templates/_jobs_table.html").read_text()
+    upload = Path("web/templates/upload.html").read_text()
+    detail = Path("web/templates/job_detail.html").read_text()
 
     assert "@media (max-width: 720px)" in css
     assert "@media (max-width: 420px)" in css
-    assert "td::before" in css
+    assert ".job-card" in css
+    assert "position: sticky" in css
+    assert "z-index: 10" in css
+    assert ".job-list-head" not in css
+    assert ".job-summary" in css
     assert ".selected-file" in css
+    assert "selected-files-heading" in upload
+    assert "data-clear-files" in upload
+    assert "No files selected." not in upload
+    assert 'data-clear-files hidden' in upload
+    assert "data-view-control" in detail
+    assert "gallery-list" in css
     assert ".download-actions" in css
     assert ".gallery" in css
-    assert 'data-label="Actions"' in jobs_table
+    assert "job-actions" in jobs_table
+    assert "data-gallery-open-key" in jobs_table
+    assert "data-gallery-key" in jobs_table
+    assert "See completed jobs" in jobs_table
+    assert "action-icon" in jobs_table
+    assert 'data-lucide="trash-2"' in jobs_table
+    assert 'data-lucide="external-link"' in jobs_table
+    assert "job-list-head" not in jobs_table
+    assert "<span>Inputs</span>" not in jobs_table
+    assert 'aria-label="Download all"' in jobs_table
+    assert "scale(2.15)" in css
+    assert "gallery-item img {\n  aspect-ratio: 1;\n  border-radius" in css
+
+
+def test_relative_date_labels_drop_seconds():
+    now = datetime(2026, 5, 22, 14, 30, 15)
+
+    assert format_display_datetime("2026-05-22 09:07:44", now) == "Today at 9:07 AM"
+    assert format_display_datetime("2026-05-21 18:05:12", now) == "Yesterday at 6:05 PM"
+    assert format_display_datetime("2026-05-18 00:01:59", now) == "4d ago at 12:01 AM"
+    assert format_display_datetime("bad 10:04:22") == "bad 10:04"
+
+
+def test_completion_duration_labels():
+    assert format_completion_duration("2026-05-22 09:07:00", "2026-05-22 09:07:12") == "12 seconds"
+    assert format_completion_duration("2026-05-22 09:07:00", "2026-05-22 09:08:01") == "1 min 1 second"
+    assert format_completion_duration("2026-05-22 09:07:00", "2026-05-22 09:09:00") == "2 min 0 seconds"
+
+
+def test_blank_job_title_display_falls_back_to_created_at_label():
+    assert format_job_title(None, "Today at 9:07 AM") == "Today at 9:07 AM"
+    assert format_job_title("   ", "Today at 9:07 AM") == "Today at 9:07 AM"
+    assert format_job_title("Family scans", "Today at 9:07 AM") == "Family scans"
+
+
+def test_theme_override_script_and_css_are_present():
+    base = Path("web/templates/base.html").read_text()
+    css = Path("web/static/app.css").read_text()
+
+    assert 'params.get("theme")' in base
+    assert 'window.localStorage.setItem(storageKey, requestedTheme)' in base
+    assert 'window.localStorage.removeItem(storageKey)' in base
+    assert "lucide@1.16.0" in base
+    assert "window.lucide.createIcons" in base
+    assert "data-theme-toggle" in base
+    assert "data-menu-toggle" in base
+    assert "data-primary-nav" in base
+    assert ':root[data-theme="dark"]' in css
+    assert ':root:not([data-theme="light"])' in css
+
+
+def test_dark_mode_component_tokens_cover_shared_ui():
+    css = Path("web/static/app.css").read_text()
+
+    for token in (
+        "--nav-link",
+        "--danger-solid",
+        "--error-border",
+        "--neutral-chip-bg",
+        "--running-bg",
+        "--cancelled-bg",
+        "--progress-bg",
+        "--control-active-bg",
+        "--media-placeholder-bg",
+        "--hover-shadow",
+    ):
+        assert token in css
+    for rule in (
+        "nav a {\n  border-bottom: 2px solid transparent;\n  color: var(--nav-link);",
+        "button.danger {\n  background: var(--danger-solid);",
+        ".summary-chip {\n  align-items: center;\n  background: var(--neutral-chip-bg);",
+        ".status-running {\n  background: var(--running-bg);",
+        ".progress {\n  background: var(--progress-bg);",
+        ".section-tools .is-active {\n  background: var(--control-active-bg);",
+    ):
+        assert rule in css

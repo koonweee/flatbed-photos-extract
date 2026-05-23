@@ -12,7 +12,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
+    title TEXT,
     status TEXT NOT NULL,
     error_message TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -76,6 +76,7 @@ def migrate_schema(connection: sqlite3.Connection) -> None:
             "completed_at": "TEXT",
         },
     )
+    relax_jobs_title_constraint(connection)
 
 
 def add_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -86,6 +87,61 @@ def add_columns(connection: sqlite3.Connection, table: str, columns: dict[str, s
     for name, definition in columns.items():
         if name not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def relax_jobs_title_constraint(connection: sqlite3.Connection) -> None:
+    title_column = next(
+        row
+        for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+        if row["name"] == "title"
+    )
+    if not title_column["notnull"]:
+        return
+
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.executescript(
+        """
+        CREATE TABLE jobs_migration (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            completed_at TEXT
+        );
+        INSERT INTO jobs_migration (
+            id,
+            title,
+            status,
+            error_message,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+        )
+        SELECT
+            id,
+            title,
+            status,
+            error_message,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+        FROM jobs;
+        DROP TABLE jobs;
+        ALTER TABLE jobs_migration RENAME TO jobs;
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at
+            ON jobs(status, created_at);
+        """
+    )
+    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    connection.execute("PRAGMA foreign_keys = ON")
+    if violations:
+        raise sqlite3.IntegrityError(f"foreign key violations after jobs migration: {violations}")
 
 
 def list_jobs(database_path: Path, statuses: Iterable[str]) -> list[sqlite3.Row]:
@@ -114,7 +170,7 @@ def get_job(database_path: Path, job_id: str) -> sqlite3.Row | None:
         ).fetchone()
 
 
-def insert_job(database_path: Path, job_id: str, title: str, status: str) -> None:
+def insert_job(database_path: Path, job_id: str, title: str | None, status: str) -> None:
     with connect(database_path) as connection:
         connection.execute(
             "INSERT INTO jobs (id, title, status) VALUES (?, ?, ?)",
@@ -125,7 +181,7 @@ def insert_job(database_path: Path, job_id: str, title: str, status: str) -> Non
 def create_job_with_files(
     database_path: Path,
     job_id: str,
-    title: str,
+    title: str | None,
     file_paths: Iterable[str],
 ) -> None:
     with connect(database_path) as connection:

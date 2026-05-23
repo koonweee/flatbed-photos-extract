@@ -1,160 +1,167 @@
 {% extends "base.html" %}
 
-{% block title %}{{ job["title"] }} - Flatbed Photos{% endblock %}
+{% block title %}{{ job["title_display"] }} - Flatbed Photos{% endblock %}
+{% block body_class %}detail-page{% endblock %}
 
 {% block content %}
 <section class="panel detail-header">
-  <div>
+  <div class="truncate-box">
     <a class="back-link" href="/completed">Completed jobs</a>
-    <h1>{{ job["title"] }}</h1>
-    <p class="muted">Created {{ job["created_at"] }}{% if job["completed_at"] %} &middot; Completed {{ job["completed_at"] }}{% endif %}</p>
+    <h1 class="truncate" title="{{ job["title_display"] }}">{{ job["title_display"] }}</h1>
+    <p class="muted">Created {{ job["created_at_display"] }}{% if job["completed_duration_display"] %} · Completed in {{ job["completed_duration_display"] }}{% endif %}</p>
     {% if job["error_message"] %}
     <div class="error" role="alert">{{ job["error_message"] }}</div>
     {% endif %}
   </div>
   <div class="download-actions">
-    {% if metadata_exists %}
-    <a class="button secondary" href="/jobs/{{ job["id"] }}/download/metadata" download>Metadata CSV</a>
-    {% endif %}
     {% if job["status"] == "completed" and zip_exists %}
-    <a class="button" href="/jobs/{{ job["id"] }}/download/photos.zip" download>Download all</a>
+    <a class="action-icon" href="/jobs/{{ job["id"] }}/download/photos.zip" download aria-label="Download all" title="Download all">
+      <i data-lucide="download" aria-hidden="true"></i>
+    </a>
     {% endif %}
   </div>
 </section>
 
-<section class="panel">
-  <h2>Input scans</h2>
-  {% if input_files %}
-  <div class="gallery gallery-inputs">
-    {% for item in input_files %}
-    <button
-      class="gallery-item"
-      type="button"
-      data-gallery-item
-      data-gallery-src="{{ item["url"] }}"
-      data-gallery-name="{{ item["name"] }}"
-      data-gallery-group="Input scans"
-    >
-      <img src="{{ item["url"] }}" alt="{{ item["name"] }}">
-      <span>{{ item["name"] }}</span>
-    </button>
-    {% endfor %}
+<section class="panel detail-tabs-panel">
+  <div class="tabs" role="tablist" aria-label="Job result sections">
+    <button class="tab is-active" type="button" role="tab" aria-selected="true" aria-controls="tab-output" id="tab-output-control" data-tab-control="output">Output</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-input" id="tab-input-control" data-tab-control="input">Input</button>
+    {% if debug_images %}
+    <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-debug" id="tab-debug-control" data-tab-control="debug">Debug</button>
+    {% endif %}
   </div>
-  {% else %}
-  <p class="muted">No input scans found.</p>
-  {% endif %}
-</section>
 
-<section class="panel">
-  <h2>Extracted photos</h2>
-  {% if output_photos %}
-  <div class="gallery gallery-outputs">
-    {% for item in output_photos %}
-    <button
-      class="gallery-item"
-      type="button"
-      data-gallery-item
-      data-gallery-src="{{ item["url"] }}"
-      data-gallery-name="{{ item["name"] }}"
-      data-gallery-group="Extracted photos"
-    >
-      <img src="{{ item["url"] }}" alt="{{ item["name"] }}" loading="lazy">
-      <span>{{ item["name"] }}</span>
-    </button>
-    {% endfor %}
-  </div>
-  {% else %}
-  <p class="muted">No extracted photos found.</p>
-  {% endif %}
-</section>
-
-{% if debug_images %}
-<section class="panel">
-  <h2>Debug</h2>
-  <div class="debug-gallery">
-    {% for item in debug_images %}
-    <button
-      class="debug-item"
-      type="button"
-      data-gallery-item
-      data-gallery-src="{{ item["url"] }}"
-      data-gallery-name="{{ item["name"] }}"
-      data-gallery-group="Debug"
-    >
-      <img src="{{ item["url"] }}" alt="{{ item["name"] }}" loading="lazy">
-      <span>{{ item["name"] }}</span>
-    </button>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-<dialog class="gallery-dialog" data-gallery-dialog aria-label="Image gallery">
-  <div class="gallery-dialog-shell">
-    <header class="gallery-dialog-header">
-      <div>
-        <p class="muted" data-gallery-group-label></p>
-        <h2 data-gallery-title></h2>
+  <div class="tab-panel" role="tabpanel" id="tab-output" aria-labelledby="tab-output-control" data-tab-panel="output">
+    <div class="section-heading">
+      <h2>Extracted photos</h2>
+      <div class="section-tools">
+        <span class="muted">{{ output_photos|length }} photos</span>
+        <button class="secondary icon-button is-active" type="button" data-view-control="output" data-view-mode="grid" aria-label="Grid view">
+          <i data-lucide="layout-grid" aria-hidden="true"></i>
+        </button>
+        <button class="secondary icon-button" type="button" data-view-control="output" data-view-mode="list" aria-label="List view">
+          <i data-lucide="list" aria-hidden="true"></i>
+        </button>
       </div>
-      <button class="secondary gallery-close" type="button" data-gallery-close aria-label="Close gallery">Close</button>
-    </header>
-    <div class="gallery-stage">
-      <button class="secondary gallery-nav" type="button" data-gallery-prev aria-label="Previous image">Previous</button>
-      <img data-gallery-image alt="">
-      <button class="secondary gallery-nav" type="button" data-gallery-next aria-label="Next image">Next</button>
     </div>
-    <footer class="gallery-dialog-footer">
-      <span class="muted" data-gallery-count></span>
-      <a class="button secondary" data-gallery-open href="">Open image file</a>
-    </footer>
+    {% if output_photos %}
+    <div class="gallery gallery-outputs" data-view-gallery="output">
+      {% for item in output_photos %}
+      <button
+        class="gallery-item"
+        type="button"
+        data-gallery-item
+        data-gallery-src="{{ item["url"] }}"
+        data-gallery-name="{{ item["name"] }}"
+        data-gallery-group="Output"
+        title="{{ item["name"] }}"
+      >
+        <img src="{{ item["url"] }}" alt="{{ item["name"] }}" loading="lazy">
+        <span class="truncate">{{ item["name"] }}</span>
+      </button>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">No extracted photos found.</p>
+    {% endif %}
   </div>
-</dialog>
+
+  <div class="tab-panel" role="tabpanel" id="tab-input" aria-labelledby="tab-input-control" data-tab-panel="input" hidden>
+    <div class="section-heading">
+      <h2>Input scans</h2>
+      <div class="section-tools">
+        <span class="muted">{{ input_files|length }} scans</span>
+        <button class="secondary icon-button is-active" type="button" data-view-control="input" data-view-mode="grid" aria-label="Grid view">
+          <i data-lucide="layout-grid" aria-hidden="true"></i>
+        </button>
+        <button class="secondary icon-button" type="button" data-view-control="input" data-view-mode="list" aria-label="List view">
+          <i data-lucide="list" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+    {% if input_files %}
+    <div class="gallery gallery-inputs" data-view-gallery="input">
+      {% for item in input_files %}
+      <button
+        class="gallery-item"
+        type="button"
+        data-gallery-item
+        data-gallery-src="{{ item["url"] }}"
+        data-gallery-name="{{ item["name"] }}"
+        data-gallery-group="Input"
+        title="{{ item["name"] }}"
+      >
+        <img src="{{ item["url"] }}" alt="{{ item["name"] }}">
+        <span class="truncate">{{ item["name"] }}</span>
+      </button>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">No input scans found.</p>
+    {% endif %}
+  </div>
+
+  {% if debug_images %}
+  <div class="tab-panel" role="tabpanel" id="tab-debug" aria-labelledby="tab-debug-control" data-tab-panel="debug" hidden>
+    <div class="section-heading">
+      <h2>Debug</h2>
+      <div class="section-tools">
+        <span class="muted">{{ debug_images|length }} images</span>
+        <button class="secondary icon-button is-active" type="button" data-view-control="debug" data-view-mode="grid" aria-label="Grid view">
+          <i data-lucide="layout-grid" aria-hidden="true"></i>
+        </button>
+        <button class="secondary icon-button" type="button" data-view-control="debug" data-view-mode="list" aria-label="List view">
+          <i data-lucide="list" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+    <div class="gallery debug-gallery" data-view-gallery="debug">
+      {% for item in debug_images %}
+      <button
+        class="gallery-item debug-item"
+        type="button"
+        data-gallery-item
+        data-gallery-src="{{ item["url"] }}"
+        data-gallery-name="{{ item["name"] }}"
+        data-gallery-group="Debug"
+        title="{{ item["name"] }}"
+      >
+        <img src="{{ item["url"] }}" alt="{{ item["name"] }}" loading="lazy">
+        <span class="truncate">{{ item["name"] }}</span>
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</section>
 
 <script>
-  const galleryItems = Array.from(document.querySelectorAll("[data-gallery-item]"));
-  const dialog = document.querySelector("[data-gallery-dialog]");
-  const image = document.querySelector("[data-gallery-image]");
-  const title = document.querySelector("[data-gallery-title]");
-  const groupLabel = document.querySelector("[data-gallery-group-label]");
-  const count = document.querySelector("[data-gallery-count]");
-  const openLink = document.querySelector("[data-gallery-open]");
-  const closeButton = document.querySelector("[data-gallery-close]");
-  const previousButton = document.querySelector("[data-gallery-prev]");
-  const nextButton = document.querySelector("[data-gallery-next]");
-  let activeIndex = 0;
-
-  function showGalleryItem(index) {
-    if (galleryItems.length === 0) {
-      return;
-    }
-    activeIndex = (index + galleryItems.length) % galleryItems.length;
-    const item = galleryItems[activeIndex];
-    const name = item.dataset.galleryName;
-    const src = item.dataset.gallerySrc;
-    image.src = src;
-    image.alt = name;
-    title.textContent = name;
-    groupLabel.textContent = item.dataset.galleryGroup;
-    count.textContent = `${activeIndex + 1} of ${galleryItems.length}`;
-    openLink.href = src;
-  }
-
-  galleryItems.forEach((item, index) => {
-    item.addEventListener("click", () => {
-      showGalleryItem(index);
-      dialog.showModal();
+  document.querySelectorAll("[data-tab-control]").forEach((control) => {
+    control.addEventListener("click", () => {
+      const target = control.dataset.tabControl;
+      document.querySelectorAll("[data-tab-control]").forEach((tab) => {
+        const selected = tab === control;
+        tab.classList.toggle("is-active", selected);
+        tab.setAttribute("aria-selected", selected ? "true" : "false");
+      });
+      document.querySelectorAll("[data-tab-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.tabPanel !== target;
+      });
     });
   });
-
-  closeButton.addEventListener("click", () => dialog.close());
-  previousButton.addEventListener("click", () => showGalleryItem(activeIndex - 1));
-  nextButton.addEventListener("click", () => showGalleryItem(activeIndex + 1));
-  dialog.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft") {
-      showGalleryItem(activeIndex - 1);
-    } else if (event.key === "ArrowRight") {
-      showGalleryItem(activeIndex + 1);
-    }
+  document.querySelectorAll("[data-view-control]").forEach((control) => {
+    control.addEventListener("click", () => {
+      const target = control.dataset.viewControl;
+      const mode = control.dataset.viewMode;
+      const gallery = document.querySelector(`[data-view-gallery="${target}"]`);
+      if (!gallery) {
+        return;
+      }
+      gallery.classList.toggle("gallery-list", mode === "list");
+      document.querySelectorAll(`[data-view-control="${target}"]`).forEach((button) => {
+        button.classList.toggle("is-active", button === control);
+      });
+    });
   });
 </script>
 {% endblock %}

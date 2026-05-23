@@ -114,7 +114,7 @@ def test_empty_upload_is_rejected(tmp_path):
     assert rows(tmp_path / "app.db", "SELECT * FROM jobs") == []
 
 
-def test_blank_title_defaults_to_timestamp_name(tmp_path):
+def test_blank_title_is_stored_null_and_displayed_from_created_at(tmp_path):
     async def run():
         app = make_app(tmp_path)
         async with app.router.lifespan_context(app):
@@ -126,15 +126,18 @@ def test_blank_title_defaults_to_timestamp_name(tmp_path):
                     files={"files": ("scan.webp", b"webp", "image/webp")},
                     follow_redirects=False,
                 )
+                active = await client.get("/active")
             finally:
                 await client.aclose()
-        return response
+        return response, active
 
-    response = asyncio.run(run())
+    response, active = asyncio.run(run())
 
     assert response.status_code == 303
     job = rows(tmp_path / "app.db", "SELECT title FROM jobs")[0]
-    assert job["title"].startswith("Upload ")
+    assert job["title"] is None
+    assert "Today at" in active.text
+    assert "Untitled upload" not in active.text
 
 
 def test_low_disk_space_rejects_upload(monkeypatch, tmp_path):

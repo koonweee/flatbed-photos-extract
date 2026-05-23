@@ -174,6 +174,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "title": "Active jobs",
                 "empty_message": "No active jobs.",
                 "jobs": jobs,
+                "status_counts": status_counts(jobs),
+                "job_mode": "active",
                 "auto_refresh": True,
             },
         )
@@ -208,6 +210,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "title": "Completed jobs",
                 "empty_message": "No completed jobs.",
                 "jobs": jobs,
+                "status_counts": status_counts(jobs),
+                "job_mode": "completed",
             },
         )
 
@@ -222,13 +226,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return HTMLResponse("Job not found.", status_code=404)
         if job["status"] not in COMPLETED_STATUSES:
             return RedirectResponse("/active", status_code=303)
+        job_data = dict(job)
+        decorate_job_dates(job_data)
 
         return TEMPLATES.TemplateResponse(
             request,
             "job_detail.html",
             {
                 "active": "completed",
-                "job": dict(job),
+                "job": job_data,
                 **build_job_result(settings.data_dir, settings.database_path, job_id),
             },
         )
@@ -340,12 +346,24 @@ def prepare_jobs(request: Request, statuses: tuple[str, ...]) -> list[dict]:
     jobs = []
     for row in list_jobs(settings.database_path, statuses):
         job = dict(row)
+        decorate_job_dates(job)
         job["files"] = [dict(file) for file in list_files_for_job(settings.database_path, row["id"])]
+        for file in job["files"]:
+            file_path = Path(file["path"])
+            file["name"] = file_path.name
+            file["url"] = f"/jobs/{row['id']}/media/inputs/{file_path.name}"
         total_files = int(job["total_files"] or 0)
         completed_files = int(job["completed_files"] or 0)
         job["progress_label"] = f"{completed_files}/{total_files}"
         job["progress_percent"] = round((completed_files / total_files) * 100) if total_files else 0
         job["eta"] = eta_label(row["status"], total_files, completed_files, average_seconds)
+        photos_dir = settings.data_dir / "jobs" / row["id"] / "output" / "photos"
+        job["output_count"] = sum(
+            1
+            for path in (photos_dir.iterdir() if photos_dir.is_dir() else [])
+            if path.is_file() and path.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+        )
+        job["zip_exists"] = (settings.data_dir / "jobs" / row["id"] / "downloads" / "photos.zip").is_file()
         jobs.append(job)
     return jobs
 
@@ -358,17 +376,94 @@ def render_jobs_fragment(
     status_code: int = 200,
     notice: str | None = None,
 ) -> HTMLResponse:
+    jobs = prepare_jobs(request, statuses)
     return TEMPLATES.TemplateResponse(
         request,
         "_jobs_table.html",
         {
             "empty_message": empty_message,
-            "jobs": prepare_jobs(request, statuses),
+            "jobs": jobs,
+            "status_counts": status_counts(jobs),
+            "job_mode": "active" if auto_refresh else "completed",
             "auto_refresh": auto_refresh,
             "notice": notice,
         },
         status_code=status_code,
     )
+
+
+def status_counts(jobs: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for job in jobs:
+        status = str(job["status"])
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def decorate_job_dates(job: dict) -> None:
+    job["created_at_display"] = format_display_datetime(job.get("created_at"))
+    job["completed_at_display"] = format_display_datetime(job.get("completed_at"))
+    job["completed_duration_display"] = format_completion_duration(job.get("created_at"), job.get("completed_at"))
+    job["title_display"] = format_job_title(job.get("title"), job["created_at_display"])
+
+
+def format_job_title(title: str | None, created_at_display: str) -> str:
+    cleaned = title.strip() if title else ""
+    return cleaned or created_at_display or "Untitled upload"
+
+
+def format_display_datetime(value: str | None, now: datetime | None = None) -> str:
+    if not value:
+        return ""
+    parsed = parse_database_datetime(value)
+    if parsed is None:
+        return trim_seconds(value)
+
+    now = now or datetime.now()
+    days_ago = (now.date() - parsed.date()).days
+    time_label = parsed.strftime("%I:%M %p").lstrip("0")
+    if days_ago == 0:
+        return f"Today at {time_label}"
+    if days_ago == 1:
+        return f"Yesterday at {time_label}"
+    if days_ago > 1:
+        return f"{days_ago}d ago at {time_label}"
+    if days_ago == -1:
+        return f"Tomorrow at {time_label}"
+    return f"In {abs(days_ago)}d at {time_label}"
+
+
+def format_completion_duration(start_value: str | None, end_value: str | None) -> str:
+    if not start_value or not end_value:
+        return ""
+    start = parse_database_datetime(start_value)
+    end = parse_database_datetime(end_value)
+    if start is None or end is None:
+        return ""
+    total_seconds = max(0, round((end - start).total_seconds()))
+    minutes, seconds = divmod(total_seconds, 60)
+    if minutes:
+        return f"{minutes} min {seconds} {pluralize('second', seconds)}"
+    return f"{seconds} {pluralize('second', seconds)}"
+
+
+def pluralize(word: str, count: int) -> str:
+    return word if count == 1 else f"{word}s"
+
+
+def parse_database_datetime(value: str) -> datetime | None:
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def trim_seconds(value: str) -> str:
+    return re.sub(r"(\d{1,2}:\d{2}):\d{2}", r"\1", value)
 
 
 def build_job_result(data_dir: Path, database_path: Path, job_id: str) -> dict:
@@ -488,11 +583,11 @@ def validate_uploads(files: list[UploadFile]) -> str | None:
     return None
 
 
-def normalize_title(title: str) -> str:
+def normalize_title(title: str) -> str | None:
     cleaned = title.strip()
     if cleaned:
         return cleaned
-    return f"Upload {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    return None
 
 
 def unique_input_filename(original_name: str, index: int) -> str:

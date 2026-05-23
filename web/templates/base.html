@@ -4,26 +4,101 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Flatbed Photos{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+    <script>
+      (() => {
+        const storageKey = "flatbed-theme";
+        const params = new URLSearchParams(window.location.search);
+        const requestedTheme = params.get("theme");
+        if (requestedTheme === "light" || requestedTheme === "dark") {
+          window.localStorage.setItem(storageKey, requestedTheme);
+          document.documentElement.dataset.theme = requestedTheme;
+        } else if (requestedTheme === "unset") {
+          window.localStorage.removeItem(storageKey);
+          delete document.documentElement.dataset.theme;
+        } else {
+          const storedTheme = window.localStorage.getItem(storageKey);
+          if (storedTheme === "light" || storedTheme === "dark") {
+            document.documentElement.dataset.theme = storedTheme;
+          }
+        }
+        if (requestedTheme === "light" || requestedTheme === "dark" || requestedTheme === "unset") {
+          params.delete("theme");
+          const query = params.toString();
+          window.history.replaceState(
+            {},
+            "",
+            `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+          );
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=contact-align-10">
+    <script src="https://unpkg.com/lucide@1.16.0/dist/umd/lucide.min.js" defer></script>
     <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   </head>
-  <body>
+  <body class="{% block body_class %}{% endblock %}">
     <header class="topbar">
-      <a class="brand" href="/upload">Flatbed Photos</a>
+      <div class="topbar-brand-row">
+        <a class="brand" href="/upload">Flatbed Photos</a>
+        <button class="secondary icon-button menu-toggle" type="button" data-menu-toggle aria-expanded="true" aria-label="Close menu">
+          <i data-lucide="menu" aria-hidden="true"></i>
+        </button>
+      </div>
       {% if active %}
-      <nav aria-label="Primary">
+      <nav aria-label="Primary" data-primary-nav>
         <a href="/upload" {% if active == "upload" %}aria-current="page"{% endif %}>Upload</a>
         <a href="/active" {% if active == "active" %}aria-current="page"{% endif %}>Active</a>
         <a href="/completed" {% if active == "completed" %}aria-current="page"{% endif %}>Completed</a>
       </nav>
+      <button class="secondary icon-button theme-toggle" type="button" data-theme-toggle aria-label="Toggle theme">
+        <i data-lucide="monitor" aria-hidden="true"></i>
+      </button>
+      {% if request.app.state.settings.app_password %}
       <form method="post" action="/logout">
         <button type="submit">Log out</button>
       </form>
+      {% endif %}
       {% endif %}
     </header>
     <main>
       {% block content %}{% endblock %}
     </main>
+    <dialog class="gallery-dialog" data-gallery-dialog aria-label="Image gallery">
+      <div class="gallery-dialog-shell">
+        <header class="gallery-dialog-header">
+          <div class="truncate-box">
+            <p class="muted" data-gallery-group-label></p>
+            <h2 class="truncate" data-gallery-title></h2>
+          </div>
+          <button class="secondary icon-button gallery-close" type="button" data-gallery-close aria-label="Close gallery">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </header>
+        <div class="gallery-stage">
+          <button class="secondary gallery-nav gallery-prev" type="button" data-gallery-prev aria-label="Previous image">
+            <i data-lucide="chevron-left" aria-hidden="true"></i>
+          </button>
+          <div class="gallery-image-frame">
+            <img data-gallery-image alt="">
+            <span class="zoom-lens" data-gallery-lens aria-hidden="true"></span>
+          </div>
+          <button class="secondary gallery-nav gallery-next" type="button" data-gallery-next aria-label="Next image">
+            <i data-lucide="chevron-right" aria-hidden="true"></i>
+          </button>
+        </div>
+        <footer class="gallery-dialog-footer">
+          <span class="muted" data-gallery-count></span>
+          <div class="gallery-dialog-actions">
+            <a class="action-icon" data-gallery-open href="" aria-label="Open image file" title="Open image file">
+              <i data-lucide="external-link" aria-hidden="true"></i>
+            </a>
+            <a class="action-icon" data-gallery-download href="" download aria-label="Download image" title="Download image">
+              <i data-lucide="download" aria-hidden="true"></i>
+            </a>
+          </div>
+        </footer>
+      </div>
+    </dialog>
     <script>
       if (!window.htmx) {
         window.setInterval(async () => {
@@ -34,9 +109,27 @@
           const response = await fetch(element.dataset.refreshUrl, {headers: {"X-Requested-With": "fetch"}});
           if (response.ok) {
             element.outerHTML = await response.text();
+            window.renderLucideIcons?.();
           }
         }, 1500);
       }
+      (() => {
+        function renderLucideIcons(root = document) {
+          if (!window.lucide) {
+            return;
+          }
+          window.lucide.createIcons({
+            attrs: {
+              "aria-hidden": "true",
+              focusable: "false",
+            },
+            root,
+          });
+        }
+        window.renderLucideIcons = renderLucideIcons;
+        window.addEventListener("DOMContentLoaded", () => renderLucideIcons());
+        document.addEventListener("htmx:afterSwap", (event) => renderLucideIcons(event.target));
+      })();
       document.addEventListener("click", (event) => {
         const row = event.target.closest(".clickable-row");
         if (!row || event.target.closest("a, button, form, input")) {
@@ -55,6 +148,154 @@
         event.preventDefault();
         window.location.href = row.dataset.href;
       });
+      (() => {
+        const dialog = document.querySelector("[data-gallery-dialog]");
+        if (!dialog) {
+          return;
+        }
+        const image = dialog.querySelector("[data-gallery-image]");
+        const title = dialog.querySelector("[data-gallery-title]");
+        const groupLabel = dialog.querySelector("[data-gallery-group-label]");
+        const count = dialog.querySelector("[data-gallery-count]");
+        const openLink = dialog.querySelector("[data-gallery-open]");
+        const downloadLink = dialog.querySelector("[data-gallery-download]");
+        const closeButton = dialog.querySelector("[data-gallery-close]");
+        const previousButton = dialog.querySelector("[data-gallery-prev]");
+        const nextButton = dialog.querySelector("[data-gallery-next]");
+        const frame = dialog.querySelector(".gallery-image-frame");
+        const lens = dialog.querySelector("[data-gallery-lens]");
+        let items = [];
+        let activeIndex = 0;
+
+        function refreshItems(groupKey, useKey = false) {
+          if (groupKey) {
+            const attribute = useKey ? "data-gallery-key" : "data-gallery-group";
+            items = Array.from(document.querySelectorAll(`[data-gallery-item][${attribute}="${CSS.escape(groupKey)}"]`));
+          } else {
+            items = Array.from(document.querySelectorAll("[data-gallery-item]"));
+          }
+        }
+
+        function showGalleryItem(index) {
+          if (items.length === 0) {
+            return;
+          }
+          activeIndex = (index + items.length) % items.length;
+          const item = items[activeIndex];
+          const name = item.dataset.galleryName || "";
+          const src = item.dataset.gallerySrc || "";
+          image.src = src;
+          image.alt = name;
+          title.textContent = name;
+          title.title = name;
+          groupLabel.textContent = item.dataset.galleryGroup || "";
+          count.textContent = `${activeIndex + 1} of ${items.length}`;
+          openLink.href = src;
+          downloadLink.href = src;
+        }
+
+        document.addEventListener("click", (event) => {
+          const groupButton = event.target.closest("[data-gallery-open-key], [data-gallery-open-group]");
+          if (groupButton) {
+            event.preventDefault();
+            const key = groupButton.dataset.galleryOpenKey;
+            const group = groupButton.dataset.galleryOpenGroup;
+            refreshItems(key || group, Boolean(key));
+            if (items.length === 0) {
+              return;
+            }
+            showGalleryItem(0);
+            dialog.showModal();
+            return;
+          }
+          const item = event.target.closest("[data-gallery-item]");
+          if (!item) {
+            return;
+          }
+          event.preventDefault();
+          const key = item.dataset.galleryKey;
+          const group = item.dataset.galleryGroup || "";
+          refreshItems(key || group, Boolean(key));
+          showGalleryItem(items.indexOf(item));
+          dialog.showModal();
+        });
+
+        closeButton.addEventListener("click", () => dialog.close());
+        previousButton.addEventListener("click", () => showGalleryItem(activeIndex - 1));
+        nextButton.addEventListener("click", () => showGalleryItem(activeIndex + 1));
+        dialog.addEventListener("keydown", (event) => {
+          if (event.key === "ArrowLeft") {
+            showGalleryItem(activeIndex - 1);
+          } else if (event.key === "ArrowRight") {
+            showGalleryItem(activeIndex + 1);
+          }
+        });
+        frame.addEventListener("pointermove", (event) => {
+          if (!event.pointerType || event.pointerType === "touch") {
+            return;
+          }
+          const rect = frame.getBoundingClientRect();
+          const x = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
+          const y = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
+          frame.style.setProperty("--zoom-x", `${x}%`);
+          frame.style.setProperty("--zoom-y", `${y}%`);
+          lens.style.left = `${x}%`;
+          lens.style.top = `${y}%`;
+        });
+      })();
+      (() => {
+        const button = document.querySelector("[data-theme-toggle]");
+        if (!button) {
+          return;
+        }
+        const storageKey = "flatbed-theme";
+        const applyLabel = () => {
+          const theme = document.documentElement.dataset.theme || "system";
+          const icon = theme === "dark" ? "moon" : theme === "light" ? "sun" : "monitor";
+          button.innerHTML = `<i data-lucide="${icon}" aria-hidden="true"></i>`;
+          button.ariaLabel = `Theme: ${theme}. Toggle theme`;
+          window.renderLucideIcons?.(button);
+        };
+        button.addEventListener("click", () => {
+          const current = document.documentElement.dataset.theme || "system";
+          const next = current === "system" ? "light" : current === "light" ? "dark" : "system";
+          if (next === "system") {
+            delete document.documentElement.dataset.theme;
+            window.localStorage.removeItem(storageKey);
+          } else {
+            document.documentElement.dataset.theme = next;
+            window.localStorage.setItem(storageKey, next);
+          }
+          applyLabel();
+        });
+        applyLabel();
+      })();
+      (() => {
+        const button = document.querySelector("[data-menu-toggle]");
+        const nav = document.querySelector("[data-primary-nav]");
+        if (!button || !nav) {
+          return;
+        }
+        const mobileQuery = window.matchMedia("(max-width: 720px)");
+        function syncMenuForViewport() {
+          if (!mobileQuery.matches) {
+            nav.hidden = false;
+            button.setAttribute("aria-expanded", "true");
+            button.ariaLabel = "Close menu";
+          }
+        }
+        button.addEventListener("click", () => {
+          if (!mobileQuery.matches) {
+            return;
+          }
+          const expanded = button.getAttribute("aria-expanded") !== "false";
+          button.setAttribute("aria-expanded", expanded ? "false" : "true");
+          button.ariaLabel = expanded ? "Open menu" : "Close menu";
+          nav.hidden = expanded;
+        });
+        mobileQuery.addEventListener("change", syncMenuForViewport);
+        syncMenuForViewport();
+      })();
     </script>
   </body>
 </html>
